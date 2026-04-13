@@ -1,82 +1,50 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
+import { SettingsOutline } from "@vicons/ionicons5";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import {
   createDiscreteApi,
   darkTheme,
   dateZhCN,
-  zhCN,
   NButton,
-  NCard,
   NConfigProvider,
-  NLayout,
-  NLayoutContent,
-  NLayoutHeader,
+  NIcon,
+  NScrollbar,
   NSelect,
   NSpace,
-  type DataTableRowKey,
-  type MenuOption
+  zhCN
 } from "naive-ui";
-import SidebarNav from "./components/SidebarNav.vue";
-import PlatformConfigPanel from "./components/PlatformConfigPanel.vue";
-import AccountStatsGrid from "./components/AccountStatsGrid.vue";
-import PlatformTrendChart from "./components/PlatformTrendChart.vue";
-import PlatformQuotaSummaryGrid from "./components/PlatformQuotaSummaryGrid.vue";
-import AccountTable from "./components/AccountTable.vue";
-import AccountDetailModal from "./components/AccountDetailModal.vue";
-import EditAccountModal from "./components/EditAccountModal.vue";
-import BatchEditModal from "./components/BatchEditModal.vue";
+import AccountQuotaCard from "./components/AccountQuotaCard.vue";
+import FloatingConfigModal from "./components/FloatingConfigModal.vue";
 import {
-  batchSetAccountsEnabled,
-  batchUpdateAccountFields,
-  fetchAccountDetail,
   fetchAccountsForPlatform,
-  fetchPlatformUsageTrend,
   fetchUnifiedAccounts,
-  sanitizeBaseUrl,
-  setAccountEnabled,
-  updateAccountEditableFields
+  sanitizeBaseUrl
 } from "./services/platformClients";
-import { buildPlatformQuotaSummary } from "./utils/quotaSummary";
+import type { PlatformConfig, PlatformKind, UnifiedAccount } from "./types/platform";
 import type {
-  AccountDetailResult,
-  PlatformConfig,
-  PlatformKind,
-  PlatformUsageTrend,
-  UnifiedAccount
-} from "./types/platform";
+  PlatformSortSettings,
+  SortDirection,
+  SortField
+} from "./types/viewSettings";
+import {
+  buildAccountQuotaMetrics,
+  type QuotaCardMetrics
+} from "./utils/quotaCard";
 
 const PLATFORM_STORAGE_KEY = "unified-admin-panel.platforms";
+const SORT_STORAGE_KEY = "unified-admin-panel.sort-settings";
 const THEME_STORAGE_KEY = "unified-admin-panel.theme";
 const AUTO_REFRESH_STORAGE_KEY = "unified-admin-panel.auto-refresh-seconds";
+const SPLIT_RATIO_STORAGE_KEY = "unified-admin-panel.split-ratio";
 
 type FeedbackType = "success" | "warning" | "error";
-type ViewKey = "dashboard" | "accounts" | "config" | "about";
+type AccountStateKind = "normal" | "exhausted" | "disabled" | "error";
 
 const autoRefreshOptions = [
   { label: "自动刷新：关闭", value: 0 },
   { label: "自动刷新：15秒", value: 15 },
   { label: "自动刷新：30秒", value: 30 },
   { label: "自动刷新：60秒", value: 60 }
-];
-
-const detailRefreshOptions = [
-  { label: "15秒", value: 15 },
-  { label: "30秒", value: 30 },
-  { label: "60秒", value: 60 }
-];
-
-const menuOptions: MenuOption[] = [
-  { label: "仪表盘", key: "dashboard" },
-  {
-    label: "账号管理",
-    key: "accounts",
-    children: [
-      { label: "sub2api", key: "accounts-sub2api" },
-      { label: "cpa", key: "accounts-cpa" }
-    ]
-  },
-  { label: "配置", key: "config" },
-  { label: "关于", key: "about" }
 ];
 
 const defaultPlatforms: PlatformConfig[] = [
@@ -96,8 +64,26 @@ const defaultPlatforms: PlatformConfig[] = [
   }
 ];
 
+const defaultSortSettings: PlatformSortSettings = {
+  sub2api: {
+    field: "priority",
+    direction: "asc"
+  },
+  cliproxyapi: {
+    field: "priority",
+    direction: "asc"
+  }
+};
+
 function cloneDefaultPlatforms(): PlatformConfig[] {
   return defaultPlatforms.map((item) => ({ ...item }));
+}
+
+function cloneDefaultSortSettings(): PlatformSortSettings {
+  return {
+    sub2api: { ...defaultSortSettings.sub2api },
+    cliproxyapi: { ...defaultSortSettings.cliproxyapi }
+  };
 }
 
 function isPlatformConfigArray(value: unknown): value is PlatformConfig[] {
@@ -117,6 +103,21 @@ function isPlatformConfigArray(value: unknown): value is PlatformConfig[] {
       typeof candidate.enabled === "boolean"
     );
   });
+}
+
+function isSortField(value: unknown): value is SortField {
+  return [
+    "name",
+    "priority",
+    "totalQuota",
+    "usedQuota",
+    "remainingPercent",
+    "updatedAt"
+  ].includes(String(value));
+}
+
+function isSortDirection(value: unknown): value is SortDirection {
+  return value === "asc" || value === "desc";
 }
 
 function loadPlatforms(): PlatformConfig[] {
@@ -146,6 +147,33 @@ function loadPlatforms(): PlatformConfig[] {
   }
 }
 
+function loadSortSettings(): PlatformSortSettings {
+  try {
+    const raw = localStorage.getItem(SORT_STORAGE_KEY);
+    if (!raw) {
+      return cloneDefaultSortSettings();
+    }
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const defaults = cloneDefaultSortSettings();
+    for (const platformId of ["sub2api", "cliproxyapi"] as PlatformKind[]) {
+      const rule = parsed[platformId];
+      if (!rule || typeof rule !== "object") {
+        continue;
+      }
+      const candidate = rule as Record<string, unknown>;
+      if (isSortField(candidate.field)) {
+        defaults[platformId].field = candidate.field;
+      }
+      if (isSortDirection(candidate.direction)) {
+        defaults[platformId].direction = candidate.direction;
+      }
+    }
+    return defaults;
+  } catch {
+    return cloneDefaultSortSettings();
+  }
+}
+
 function loadThemeMode(): "light" | "dark" {
   return localStorage.getItem(THEME_STORAGE_KEY) === "dark" ? "dark" : "light";
 }
@@ -162,6 +190,18 @@ function loadAutoRefreshSeconds(): number {
   return parsed;
 }
 
+function loadSplitRatio(): number {
+  const raw = localStorage.getItem(SPLIT_RATIO_STORAGE_KEY);
+  if (!raw) {
+    return 50;
+  }
+  const parsed = Number.parseFloat(raw);
+  if (!Number.isFinite(parsed)) {
+    return 50;
+  }
+  return Math.max(20, Math.min(80, parsed));
+}
+
 function parseErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message) {
     return error.message;
@@ -169,62 +209,20 @@ function parseErrorMessage(error: unknown): string {
   return "未知错误";
 }
 
-function normalizeForSearch(value: string): string {
-  return value.trim().toLowerCase();
-}
-
-function classifyStatus(status: string): "healthy" | "warning" | "error" {
-  const normalized = normalizeForSearch(status);
-  if (
-    normalized.includes("error") ||
-    normalized.includes("invalid") ||
-    normalized.includes("banned") ||
-    normalized.includes("failed")
-  ) {
-    return "error";
-  }
-  if (
-    normalized.includes("inactive") ||
-    normalized.includes("disabled") ||
-    normalized.includes("quota") ||
-    normalized.includes("exhausted") ||
-    normalized.includes("limit") ||
-    normalized.includes("retry")
-  ) {
-    return "warning";
-  }
-  return "healthy";
-}
-
-function isDisabledStatus(status: string): boolean {
-  const normalized = normalizeForSearch(status);
-  return normalized.includes("disabled") || normalized.includes("inactive");
-}
-
-function formatDate(raw?: string): string {
-  if (!raw) {
-    return "-";
-  }
-  const date = new Date(raw);
-  if (Number.isNaN(date.getTime())) {
-    return raw;
-  }
-  return date.toLocaleString();
+function applyThemeToDocument(themeMode: "light" | "dark"): void {
+  document.documentElement.setAttribute("data-theme", themeMode);
 }
 
 const platforms = ref<PlatformConfig[]>(loadPlatforms());
+const sortSettings = ref<PlatformSortSettings>(loadSortSettings());
 const themeMode = ref<"light" | "dark">(loadThemeMode());
 const autoRefreshSeconds = ref<number>(loadAutoRefreshSeconds());
-
-const currentView = ref<ViewKey>("dashboard");
-const accountTab = ref<PlatformKind>("sub2api");
-const expandedMenuKeys = ref<string[]>(["accounts"]);
+const splitRatio = ref<number>(loadSplitRatio());
 
 const loading = ref(false);
 const refreshing = ref(false);
-const actionLoading = ref(false);
-const rowLoadingMap = ref<Record<string, boolean>>({});
-const viewportHeight = ref(window.innerHeight);
+const showConfigModal = ref(false);
+const isDraggingDivider = ref(false);
 
 const testLoading = ref<Record<PlatformKind, boolean>>({
   cliproxyapi: false,
@@ -236,36 +234,9 @@ const checkMessages = ref<Record<PlatformKind, string>>({
 });
 
 const accounts = ref<UnifiedAccount[]>([]);
-const usageTrend = ref<PlatformUsageTrend>({
-  labels: [],
-  sub2apiValues: [],
-  cpaValues: []
-});
 const errors = ref<string[]>([]);
-const accountKeyword = ref("");
-const selectedRowKeys = ref<DataTableRowKey[]>([]);
 
-const showDetailModal = ref(false);
-const detailTarget = ref<UnifiedAccount | null>(null);
-const detailData = ref<AccountDetailResult | null>(null);
-const detailLoading = ref(false);
-const detailError = ref("");
-const detailAutoRefresh = ref(true);
-const detailRefreshSeconds = ref(30);
-
-const showEditModal = ref(false);
-const editSaving = ref(false);
-const editTarget = ref<UnifiedAccount | null>(null);
-const editName = ref("");
-const editNote = ref("");
-const editPriorityText = ref("");
-
-const showBatchEditModal = ref(false);
-const batchSaving = ref(false);
-const batchApplyNote = ref(true);
-const batchApplyPriority = ref(false);
-const batchNote = ref("");
-const batchPriorityText = ref("");
+const splitContainerRef = ref<HTMLElement | null>(null);
 
 const isDark = computed(() => themeMode.value === "dark");
 const themeOverrides = {
@@ -275,9 +246,6 @@ const themeOverrides = {
     primaryColorPressed: "#115e59"
   }
 };
-const accountsTableMaxHeight = computed(() =>
-  Math.max(320, viewportHeight.value - 285)
-);
 
 function notify(type: FeedbackType, message: string): void {
   const { notification } = createDiscreteApi(["notification"], {
@@ -296,129 +264,12 @@ function notify(type: FeedbackType, message: string): void {
   });
 }
 
-const selectedMenuKey = computed(() => {
-  if (currentView.value === "accounts") {
-    return accountTab.value === "sub2api" ? "accounts-sub2api" : "accounts-cpa";
-  }
-  return currentView.value;
-});
-
-const pageTitle = computed(() => {
-  if (currentView.value === "dashboard") {
-    return "仪表盘";
-  }
-  if (currentView.value === "accounts") {
-    return "账号管理";
-  }
-  if (currentView.value === "config") {
-    return "配置";
-  }
-  return "关于";
-});
-
-const pageSubtitle = computed(() => {
-  if (currentView.value === "dashboard") {
-    return "查看两个平台整体状态与数量概览";
-  }
-  if (currentView.value === "accounts") {
-    return "通过左侧菜单在 sub2api 与 cpa 账号之间切换";
-  }
-  if (currentView.value === "config") {
-    return "管理平台地址、API Key 与启用状态";
-  }
-  return "统一管理平台版本与能力说明";
-});
-
-const dashboardTotal = computed(() => accounts.value.length);
-const dashboardHealthy = computed(
-  () => accounts.value.filter((item) => classifyStatus(item.status) === "healthy").length
-);
-const dashboardWarning = computed(
-  () => accounts.value.filter((item) => classifyStatus(item.status) === "warning").length
-);
-const dashboardError = computed(
-  () => accounts.value.filter((item) => classifyStatus(item.status) === "error").length
-);
-
-const platformQuotaSummaries = computed(() => [
-  buildPlatformQuotaSummary(accounts.value, "sub2api"),
-  buildPlatformQuotaSummary(accounts.value, "cliproxyapi")
-]);
-
-const dashboardTransferredTokens = computed(() => {
-  const values = platformQuotaSummaries.value
-    .map((item) => item.totalTransferredTokens)
-    .filter((value): value is number => typeof value === "number");
-  if (!values.length) {
-    return undefined;
-  }
-  return values.reduce((sum, value) => sum + value, 0);
-});
-
-const accountsForCurrentTab = computed(() => {
-  const keyword = normalizeForSearch(accountKeyword.value);
-  return accounts.value.filter((item) => {
-    if (item.platform !== accountTab.value) {
-      return false;
-    }
-    if (!keyword) {
-      return true;
-    }
-    const bag = [
-      item.name,
-      item.accountId,
-      item.type,
-      item.status,
-      item.email ?? "",
-      item.note ?? ""
-    ]
-      .join(" ")
-      .toLowerCase();
-    return bag.includes(keyword);
-  });
-});
-
-const selectedAccounts = computed(() => {
-  const keySet = new Set(selectedRowKeys.value.map((key) => String(key)));
-  return accountsForCurrentTab.value.filter((item) => keySet.has(item.uid));
-});
-
-const currentTableTitle = computed(() =>
-  accountTab.value === "sub2api" ? "sub2api 账号列表" : "cpa 账号列表"
-);
-
-const editSupportsName = computed(() => editTarget.value?.platform === "sub2api");
-
-const detailProfileText = computed(() =>
-  JSON.stringify(
-    detailData.value?.profile ?? detailData.value?.account.raw ?? {},
-    null,
-    2
-  )
-);
-const detailStatsText = computed(() =>
-  JSON.stringify(detailData.value?.stats ?? {}, null, 2)
-);
-const detailModelsText = computed(() =>
-  JSON.stringify(detailData.value?.models ?? [], null, 2)
-);
-const detailRefreshedAtText = computed(() =>
-  formatDate(detailData.value?.refreshedAt)
-);
-
-let autoRefreshTimer: ReturnType<typeof setInterval> | null = null;
-let detailRefreshTimer: ReturnType<typeof setInterval> | null = null;
-
-function applyThemeToDocument(): void {
-  document.documentElement.setAttribute("data-theme", themeMode.value);
-}
-
-function setFeedback(type: FeedbackType, message: string): void {
-  notify(type, message);
-}
-
 function persistPlatforms(): void {
   localStorage.setItem(PLATFORM_STORAGE_KEY, JSON.stringify(platforms.value));
+}
+
+function persistSortSettings(): void {
+  localStorage.setItem(SORT_STORAGE_KEY, JSON.stringify(sortSettings.value));
 }
 
 function saveSettings(options?: { silent?: boolean }): void {
@@ -427,8 +278,9 @@ function saveSettings(options?: { silent?: boolean }): void {
     platform.apiKey = platform.apiKey.trim();
   }
   persistPlatforms();
+  persistSortSettings();
   if (!options?.silent) {
-    setFeedback("success", "配置已保存。");
+    notify("success", "配置已保存。");
   }
 }
 
@@ -448,6 +300,23 @@ function updatePlatformField(payload: {
   target[payload.key] = String(payload.value);
 }
 
+function updateSortSetting(payload: {
+  platformId: PlatformKind;
+  key: "field" | "direction";
+  value: SortField | SortDirection;
+}): void {
+  const target = sortSettings.value[payload.platformId];
+  if (!target) {
+    return;
+  }
+  if (payload.key === "field" && isSortField(payload.value)) {
+    target.field = payload.value;
+  }
+  if (payload.key === "direction" && isSortDirection(payload.value)) {
+    target.direction = payload.value;
+  }
+}
+
 function getPlatformConfig(platformId: PlatformKind): PlatformConfig {
   const platform = platforms.value.find((item) => item.id === platformId);
   if (!platform) {
@@ -456,54 +325,74 @@ function getPlatformConfig(platformId: PlatformKind): PlatformConfig {
   return platform;
 }
 
-function setRowLoading(uid: string, value: boolean): void {
-  rowLoadingMap.value = {
-    ...rowLoadingMap.value,
-    [uid]: value
-  };
-}
-
-function clearSelection(): void {
-  selectedRowKeys.value = [];
-}
-
-function handleMenuSelect(key: string): void {
-  if (key === "dashboard") {
-    currentView.value = "dashboard";
-    return;
-  }
-  if (key === "config") {
-    currentView.value = "config";
-    return;
-  }
-  if (key === "about") {
-    currentView.value = "about";
-    return;
-  }
-  if (key === "accounts-sub2api") {
-    currentView.value = "accounts";
-    accountTab.value = "sub2api";
-    return;
-  }
-  if (key === "accounts-cpa") {
-    currentView.value = "accounts";
-    accountTab.value = "cliproxyapi";
-    return;
-  }
-  if (key === "accounts") {
-    currentView.value = "accounts";
-    const hasSub2Api = accounts.value.some((item) => item.platform === "sub2api");
-    const hasCpa = accounts.value.some((item) => item.platform === "cliproxyapi");
-    if (!hasSub2Api && hasCpa) {
-      accountTab.value = "cliproxyapi";
-    } else if (hasSub2Api && !hasCpa) {
-      accountTab.value = "sub2api";
+function detectErrorPlatforms(errorMessages: string[]): Set<PlatformKind> {
+  const set = new Set<PlatformKind>();
+  for (const message of errorMessages) {
+    const normalized = message.toLowerCase();
+    for (const platform of platforms.value) {
+      const platformName = platform.name.toLowerCase();
+      const platformId = platform.id.toLowerCase();
+      if (normalized.includes(platformName) || normalized.includes(platformId)) {
+        set.add(platform.id);
+      }
     }
   }
+  return set;
 }
 
-function handleExpandedKeys(keys: string[]): void {
-  expandedMenuKeys.value = keys;
+function sortAccountsByDefault(list: UnifiedAccount[]): UnifiedAccount[] {
+  return [...list].sort(
+    (a, b) =>
+      a.platformName.localeCompare(b.platformName) ||
+      a.name.localeCompare(b.name)
+  );
+}
+
+function mergeAccountsWithFallback(
+  nextAccounts: UnifiedAccount[],
+  errorMessages: string[]
+): UnifiedAccount[] {
+  const erroredPlatforms = detectErrorPlatforms(errorMessages);
+  if (!erroredPlatforms.size) {
+    return nextAccounts;
+  }
+
+  const previousByPlatform = new Map<PlatformKind, UnifiedAccount[]>();
+  const nextByPlatform = new Map<PlatformKind, UnifiedAccount[]>();
+
+  for (const account of accounts.value) {
+    if (!previousByPlatform.has(account.platform)) {
+      previousByPlatform.set(account.platform, []);
+    }
+    previousByPlatform.get(account.platform)?.push(account);
+  }
+
+  for (const account of nextAccounts) {
+    if (!nextByPlatform.has(account.platform)) {
+      nextByPlatform.set(account.platform, []);
+    }
+    nextByPlatform.get(account.platform)?.push(account);
+  }
+
+  const merged: UnifiedAccount[] = [];
+  for (const platformId of ["sub2api", "cliproxyapi"] as PlatformKind[]) {
+    const nextList = nextByPlatform.get(platformId) ?? [];
+    if (nextList.length > 0) {
+      merged.push(...nextList);
+      continue;
+    }
+    if (erroredPlatforms.has(platformId)) {
+      const previousList = previousByPlatform.get(platformId) ?? [];
+      if (previousList.length > 0) {
+        merged.push(...previousList);
+      }
+    }
+  }
+
+  if (!merged.length) {
+    return nextAccounts;
+  }
+  return sortAccountsByDefault(merged);
 }
 
 async function refreshAccounts(options?: { silent?: boolean }): Promise<void> {
@@ -516,100 +405,29 @@ async function refreshAccounts(options?: { silent?: boolean }): Promise<void> {
     loading.value = true;
   }
   try {
-    const [accountResult, trendResult] = await Promise.all([
-      fetchUnifiedAccounts(platforms.value),
-      fetchPlatformUsageTrend(platforms.value, 14)
-    ]);
-    accounts.value = accountResult.accounts;
-    usageTrend.value = trendResult.trend;
-    errors.value = [...accountResult.errors, ...trendResult.errors];
-    if (currentView.value === "accounts") {
-      const hasCurrent = accountResult.accounts.some(
-        (item) => item.platform === accountTab.value
-      );
-      if (!hasCurrent) {
-        const fallbackTab: PlatformKind =
-          accountTab.value === "sub2api" ? "cliproxyapi" : "sub2api";
-        const hasFallback = accountResult.accounts.some(
-          (item) => item.platform === fallbackTab
-        );
-        if (hasFallback) {
-          accountTab.value = fallbackTab;
-          clearSelection();
-          setFeedback("warning", `当前平台暂无账号，已自动切换到 ${fallbackTab}。`);
-        }
-      }
+    const result = await fetchUnifiedAccounts(platforms.value);
+    const mergedAccounts = mergeAccountsWithFallback(result.accounts, result.errors);
+    const shouldKeepOldSnapshot =
+      mergedAccounts.length === 0 &&
+      accounts.value.length > 0 &&
+      result.errors.length > 0;
+    if (!shouldKeepOldSnapshot) {
+      accounts.value = mergedAccounts;
     }
+    errors.value = result.errors;
     if (errors.value.length && !options?.silent) {
-      setFeedback(
-        "warning",
-        errors.value.slice(0, 2).join("；")
-      );
-    }
-
-    const validKeys = new Set(accountResult.accounts.map((item) => item.uid));
-    selectedRowKeys.value = selectedRowKeys.value.filter((key) =>
-      validKeys.has(String(key))
-    );
-
-    if (detailTarget.value) {
-      const refreshed = accountResult.accounts.find(
-        (item) => item.uid === detailTarget.value?.uid
-      );
-      if (refreshed) {
-        detailTarget.value = refreshed;
-      }
+      notify("warning", errors.value.slice(0, 2).join("；"));
     }
   } catch (error) {
     const message = parseErrorMessage(error);
     errors.value = [message];
     if (!options?.silent) {
-      setFeedback("error", message);
+      notify("error", message);
     }
   } finally {
     refreshing.value = false;
     loading.value = false;
   }
-}
-
-function resetAutoRefreshTimer(): void {
-  if (autoRefreshTimer) {
-    clearInterval(autoRefreshTimer);
-    autoRefreshTimer = null;
-  }
-  if (autoRefreshSeconds.value <= 0) {
-    return;
-  }
-  autoRefreshTimer = setInterval(() => {
-    void refreshAccounts({ silent: true });
-  }, autoRefreshSeconds.value * 1000);
-}
-
-function resetDetailRefreshTimer(): void {
-  if (detailRefreshTimer) {
-    clearInterval(detailRefreshTimer);
-    detailRefreshTimer = null;
-  }
-  if (
-    !showDetailModal.value ||
-    !detailAutoRefresh.value ||
-    detailRefreshSeconds.value <= 0
-  ) {
-    return;
-  }
-  detailRefreshTimer = setInterval(() => {
-    void loadAccountDetail(true);
-  }, detailRefreshSeconds.value * 1000);
-}
-
-function handleWindowResize(): void {
-  viewportHeight.value = window.innerHeight;
-}
-
-function toggleTheme(): void {
-  themeMode.value = themeMode.value === "dark" ? "light" : "dark";
-  localStorage.setItem(THEME_STORAGE_KEY, themeMode.value);
-  applyThemeToDocument();
 }
 
 async function testConnection(platformId: PlatformKind): Promise<void> {
@@ -624,242 +442,296 @@ async function testConnection(platformId: PlatformKind): Promise<void> {
   testLoading.value[platformId] = false;
 }
 
-async function handleToggleAccount(account: UnifiedAccount): Promise<void> {
-  const platform = getPlatformConfig(account.platform);
-  const shouldEnable = isDisabledStatus(account.status);
-  setRowLoading(account.uid, true);
-  try {
-    await setAccountEnabled(platform, account, shouldEnable);
-    setFeedback(
-      "success",
-      `${account.name}：${shouldEnable ? "启用" : "停用"}成功。`
-    );
-    await refreshAccounts({ silent: true });
-    if (detailTarget.value?.uid === account.uid) {
-      await loadAccountDetail(true);
-    }
-  } catch (error) {
-    setFeedback("error", `${account.name}：${parseErrorMessage(error)}`);
-  } finally {
-    setRowLoading(account.uid, false);
-  }
+function copyTextBySelection(text: string): boolean {
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  document.body.appendChild(textarea);
+  textarea.select();
+  const success = document.execCommand("copy");
+  document.body.removeChild(textarea);
+  return success;
 }
 
-function openEditForAccount(account: UnifiedAccount): void {
-  editTarget.value = account;
-  editName.value = account.name;
-  editNote.value = account.note ?? "";
-  editPriorityText.value =
-    typeof account.priority === "number" ? String(account.priority) : "";
-  showEditModal.value = true;
-}
-
-async function saveEdit(): Promise<void> {
-  if (!editTarget.value) {
+async function handleCopyEmail(email: string): Promise<void> {
+  const normalized = email.trim();
+  if (!normalized) {
+    notify("warning", "该账号没有可复制的邮箱。");
     return;
-  }
-  const target = editTarget.value;
-  const platform = getPlatformConfig(target.platform);
-  const payload: Record<string, unknown> = {};
-
-  if (target.platform === "sub2api") {
-    const nextName = editName.value.trim();
-    if (nextName && nextName !== target.name) {
-      payload.name = nextName;
-    }
-  }
-
-  const normalizedNote = editNote.value.trim();
-  if (normalizedNote !== (target.note ?? "")) {
-    payload.note = normalizedNote;
-  }
-
-  const normalizedPriorityText = editPriorityText.value.trim();
-  if (normalizedPriorityText) {
-    const parsedPriority = Number.parseInt(normalizedPriorityText, 10);
-    if (!Number.isFinite(parsedPriority) || parsedPriority < 0) {
-      setFeedback("error", "优先级必须为非负整数。");
-      return;
-    }
-    if (parsedPriority !== target.priority) {
-      payload.priority = parsedPriority;
-    }
-  } else if (
-    target.platform === "cliproxyapi" &&
-    typeof target.priority === "number"
-  ) {
-    payload.priority = 0;
-  }
-
-  if (!Object.keys(payload).length) {
-    setFeedback("warning", "没有可提交的变更。");
-    return;
-  }
-
-  editSaving.value = true;
-  try {
-    await updateAccountEditableFields(
-      platform,
-      target,
-      payload as { name?: string; note?: string; priority?: number }
-    );
-    showEditModal.value = false;
-    setFeedback("success", `${target.name}：字段更新成功。`);
-    await refreshAccounts({ silent: true });
-    if (detailTarget.value?.uid === target.uid) {
-      await loadAccountDetail(true);
-    }
-  } catch (error) {
-    setFeedback("error", parseErrorMessage(error));
-  } finally {
-    editSaving.value = false;
-  }
-}
-
-async function runBatchEnable(enabled: boolean): Promise<void> {
-  if (!selectedAccounts.value.length) {
-    setFeedback("warning", "请至少选择一个账号。");
-    return;
-  }
-  actionLoading.value = true;
-  const grouped = new Map<PlatformKind, UnifiedAccount[]>();
-  for (const account of selectedAccounts.value) {
-    if (!grouped.has(account.platform)) {
-      grouped.set(account.platform, []);
-    }
-    grouped.get(account.platform)?.push(account);
   }
 
   try {
-    for (const [platformKind, groupAccounts] of grouped.entries()) {
-      await batchSetAccountsEnabled(
-        getPlatformConfig(platformKind),
-        groupAccounts,
-        enabled
-      );
-    }
-    setFeedback(
-      "success",
-      `批量${enabled ? "启用" : "停用"}完成，共 ${selectedAccounts.value.length} 个账号。`
-    );
-    await refreshAccounts({ silent: true });
-  } catch (error) {
-    setFeedback("error", parseErrorMessage(error));
-  } finally {
-    actionLoading.value = false;
-  }
-}
-
-function openBatchEditModal(): void {
-  if (!selectedAccounts.value.length) {
-    setFeedback("warning", "请至少选择一个账号。");
-    return;
-  }
-  batchApplyNote.value = true;
-  batchApplyPriority.value = false;
-  batchNote.value = "";
-  batchPriorityText.value = "";
-  showBatchEditModal.value = true;
-}
-
-async function saveBatchEdit(): Promise<void> {
-  if (!selectedAccounts.value.length) {
-    return;
-  }
-  if (!batchApplyNote.value && !batchApplyPriority.value) {
-    setFeedback("warning", "请至少选择一个要批量修改的字段。");
-    return;
-  }
-
-  const grouped = new Map<PlatformKind, UnifiedAccount[]>();
-  for (const account of selectedAccounts.value) {
-    if (!grouped.has(account.platform)) {
-      grouped.set(account.platform, []);
-    }
-    grouped.get(account.platform)?.push(account);
-  }
-
-  const priorityText = batchPriorityText.value.trim();
-  let priorityValue: number | undefined;
-  if (batchApplyPriority.value) {
-    const parsed = Number.parseInt(priorityText, 10);
-    if (!Number.isFinite(parsed) || parsed < 0) {
-      setFeedback("error", "批量优先级必须为非负整数。");
-      return;
-    }
-    priorityValue = parsed;
-  }
-
-  batchSaving.value = true;
-  let noteSkippedForSub2Api = false;
-  try {
-    for (const [platformKind, groupAccounts] of grouped.entries()) {
-      const payload: { note?: string; priority?: number } = {};
-      if (batchApplyPriority.value && typeof priorityValue === "number") {
-        payload.priority = priorityValue;
-      }
-      if (batchApplyNote.value) {
-        if (platformKind === "cliproxyapi") {
-          payload.note = batchNote.value.trim();
-        } else {
-          noteSkippedForSub2Api = true;
-        }
-      }
-      if (!Object.keys(payload).length) {
-        continue;
-      }
-      await batchUpdateAccountFields(
-        getPlatformConfig(platformKind),
-        groupAccounts,
-        payload
-      );
-    }
-
-    showBatchEditModal.value = false;
-    await refreshAccounts({ silent: true });
-    if (noteSkippedForSub2Api) {
-      setFeedback(
-        "warning",
-        "批量修改完成：sub2api 批量接口不支持备注，已自动跳过备注字段。"
-      );
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(normalized);
     } else {
-      setFeedback("success", "批量字段修改成功。");
+      const ok = copyTextBySelection(normalized);
+      if (!ok) {
+        throw new Error("复制失败");
+      }
     }
-  } catch (error) {
-    setFeedback("error", parseErrorMessage(error));
-  } finally {
-    batchSaving.value = false;
+    notify("success", `已复制邮箱：${normalized}`);
+  } catch {
+    notify("error", "复制失败，请检查浏览器权限。");
   }
 }
 
-async function openAccountDetail(account: UnifiedAccount): Promise<void> {
-  detailTarget.value = account;
-  showDetailModal.value = true;
-  await loadAccountDetail(false);
+function toggleTheme(): void {
+  themeMode.value = themeMode.value === "dark" ? "light" : "dark";
+  localStorage.setItem(THEME_STORAGE_KEY, themeMode.value);
+  applyThemeToDocument(themeMode.value);
 }
 
-async function loadAccountDetail(silent: boolean): Promise<void> {
-  if (!detailTarget.value) {
+const quotaMetricsMap = computed<Map<string, QuotaCardMetrics>>(() => {
+  const map = new Map<string, QuotaCardMetrics>();
+  for (const account of accounts.value) {
+    map.set(account.uid, buildAccountQuotaMetrics(account));
+  }
+  return map;
+});
+
+function getMetrics(account: UnifiedAccount): QuotaCardMetrics {
+  return (
+    quotaMetricsMap.value.get(account.uid) ?? {
+      totalText: "-",
+      usedText: "-",
+      exhausted: false
+    }
+  );
+}
+
+function formatQuotaValue(value?: number): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "-";
+  }
+  if (Math.abs(value) >= 1000) {
+    return `$${value.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+  }
+  return `$${value.toFixed(2)}`;
+}
+
+function summarizeQuotaTotals(list: UnifiedAccount[]): {
+  count: number;
+  max?: number;
+  min?: number;
+  avg?: number;
+} {
+  const totals = list
+    .map((account) => getMetrics(account).usdQuotaValue)
+    .filter(
+      (value): value is number =>
+        typeof value === "number" && Number.isFinite(value) && value > 0
+    );
+  if (!totals.length) {
+    return {
+      count: 0,
+      max: undefined,
+      min: undefined,
+      avg: undefined
+    };
+  }
+  return {
+    count: totals.length,
+    max: Math.max(...totals),
+    min: Math.min(...totals),
+    avg: totals.reduce((sum, value) => sum + value, 0) / totals.length
+  };
+}
+
+function resolveAccountState(account: UnifiedAccount): AccountStateKind {
+  const metrics = getMetrics(account);
+  if (metrics.exhausted) {
+    return "exhausted";
+  }
+
+  const normalized = account.status.trim().toLowerCase();
+  if (normalized.includes("rate_limited") || normalized.includes("rate limit")) {
+    return "exhausted";
+  }
+  if (normalized.includes("inactive") || normalized.includes("disabled")) {
+    return "disabled";
+  }
+  if (
+    normalized.includes("error") ||
+    normalized.includes("invalid") ||
+    normalized.includes("banned") ||
+    normalized.includes("failed")
+  ) {
+    return "error";
+  }
+  if (
+    normalized.includes("quota_exhausted") ||
+    normalized.includes("usage_limit_reached") ||
+    normalized.includes("insufficient_quota") ||
+    normalized.includes("quota exhausted")
+  ) {
+    return "exhausted";
+  }
+  return "normal";
+}
+
+function summarizeAccountStates(list: UnifiedAccount[]): Record<AccountStateKind, number> {
+  const summary: Record<AccountStateKind, number> = {
+    normal: 0,
+    exhausted: 0,
+    disabled: 0,
+    error: 0
+  };
+  for (const account of list) {
+    summary[resolveAccountState(account)] += 1;
+  }
+  return summary;
+}
+
+function getSortValue(
+  account: UnifiedAccount,
+  field: SortField
+): number | string | undefined {
+  const metrics = getMetrics(account);
+  if (field === "name") {
+    return account.name.toLowerCase();
+  }
+  if (field === "priority") {
+    return account.priority;
+  }
+  if (field === "totalQuota") {
+    return metrics.totalValue;
+  }
+  if (field === "usedQuota") {
+    return metrics.usedValue;
+  }
+  if (field === "remainingPercent") {
+    return metrics.remainingPercent;
+  }
+  if (!account.updatedAt) {
+    return undefined;
+  }
+  const timestamp = new Date(account.updatedAt).getTime();
+  return Number.isFinite(timestamp) ? timestamp : undefined;
+}
+
+function sortPlatformAccounts(
+  list: UnifiedAccount[],
+  rule: PlatformSortSettings[PlatformKind]
+): UnifiedAccount[] {
+  const factor = rule.direction === "asc" ? 1 : -1;
+  return [...list].sort((a, b) => {
+    const aValue = getSortValue(a, rule.field);
+    const bValue = getSortValue(b, rule.field);
+    const aMissing = typeof aValue === "undefined";
+    const bMissing = typeof bValue === "undefined";
+
+    if (aMissing && bMissing) {
+      return a.name.localeCompare(b.name, "zh-Hans-CN", {
+        sensitivity: "base"
+      });
+    }
+    if (aMissing) {
+      return 1;
+    }
+    if (bMissing) {
+      return -1;
+    }
+
+    let compareValue = 0;
+    if (typeof aValue === "number" && typeof bValue === "number") {
+      compareValue = aValue - bValue;
+    } else {
+      compareValue = String(aValue).localeCompare(String(bValue), "zh-Hans-CN", {
+        numeric: true,
+        sensitivity: "base"
+      });
+    }
+
+    if (compareValue === 0) {
+      compareValue = a.name.localeCompare(b.name, "zh-Hans-CN", {
+        sensitivity: "base"
+      });
+    }
+
+    return compareValue * factor;
+  });
+}
+
+const sub2apiAccounts = computed(() => {
+  const list = accounts.value.filter((item) => item.platform === "sub2api");
+  return sortPlatformAccounts(list, sortSettings.value.sub2api);
+});
+
+const cpaAccounts = computed(() => {
+  const list = accounts.value.filter((item) => item.platform === "cliproxyapi");
+  return sortPlatformAccounts(list, sortSettings.value.cliproxyapi);
+});
+
+const sub2apiStateSummary = computed(() => summarizeAccountStates(sub2apiAccounts.value));
+const cpaStateSummary = computed(() => summarizeAccountStates(cpaAccounts.value));
+const sub2apiQuotaSummary = computed(() => summarizeQuotaTotals(sub2apiAccounts.value));
+const cpaQuotaSummary = computed(() => summarizeQuotaTotals(cpaAccounts.value));
+
+const leftPaneStyle = computed(() => ({
+  flexBasis: `${splitRatio.value}%`
+}));
+const rightPaneStyle = computed(() => ({
+  flexBasis: `${100 - splitRatio.value}%`
+}));
+
+function updateSplitByClientX(clientX: number): void {
+  const container = splitContainerRef.value;
+  if (!container) {
     return;
   }
-  const current =
-    accounts.value.find((item) => item.uid === detailTarget.value?.uid) ??
-    detailTarget.value;
-  detailTarget.value = current;
-  if (!silent) {
-    detailLoading.value = true;
+  const rect = container.getBoundingClientRect();
+  if (rect.width <= 0) {
+    return;
   }
-  detailError.value = "";
-  try {
-    detailData.value = await fetchAccountDetail(
-      getPlatformConfig(current.platform),
-      current
-    );
-  } catch (error) {
-    detailError.value = parseErrorMessage(error);
-  } finally {
-    detailLoading.value = false;
+  const next = ((clientX - rect.left) / rect.width) * 100;
+  splitRatio.value = Math.max(20, Math.min(80, next));
+}
+
+function stopDividerDrag(): void {
+  if (!isDraggingDivider.value) {
+    return;
   }
+  isDraggingDivider.value = false;
+  window.removeEventListener("pointermove", handleDividerPointerMove);
+  window.removeEventListener("pointerup", stopDividerDrag);
+}
+
+function handleDividerPointerMove(event: PointerEvent): void {
+  if (!isDraggingDivider.value) {
+    return;
+  }
+  updateSplitByClientX(event.clientX);
+}
+
+function startDividerDrag(event: PointerEvent): void {
+  if (window.innerWidth <= 980) {
+    return;
+  }
+  isDraggingDivider.value = true;
+  updateSplitByClientX(event.clientX);
+  window.addEventListener("pointermove", handleDividerPointerMove);
+  window.addEventListener("pointerup", stopDividerDrag);
+}
+
+function adjustSplitByKeyboard(delta: number): void {
+  splitRatio.value = Math.max(20, Math.min(80, splitRatio.value + delta));
+}
+
+let autoRefreshTimer: ReturnType<typeof setInterval> | null = null;
+
+function resetAutoRefreshTimer(): void {
+  if (autoRefreshTimer) {
+    clearInterval(autoRefreshTimer);
+    autoRefreshTimer = null;
+  }
+  if (autoRefreshSeconds.value <= 0) {
+    return;
+  }
+  autoRefreshTimer = setInterval(() => {
+    void refreshAccounts({ silent: true });
+  }, autoRefreshSeconds.value * 1000);
 }
 
 watch(autoRefreshSeconds, (value) => {
@@ -867,34 +739,24 @@ watch(autoRefreshSeconds, (value) => {
   resetAutoRefreshTimer();
 });
 
-watch([showDetailModal, detailAutoRefresh, detailRefreshSeconds], () => {
-  resetDetailRefreshTimer();
+watch(themeMode, (value) => {
+  applyThemeToDocument(value);
 });
 
-watch(accountTab, () => {
-  clearSelection();
-  accountKeyword.value = "";
-});
-
-watch(themeMode, () => {
-  applyThemeToDocument();
+watch(splitRatio, (value) => {
+  localStorage.setItem(SPLIT_RATIO_STORAGE_KEY, String(value));
 });
 
 onMounted(() => {
-  applyThemeToDocument();
-  handleWindowResize();
-  window.addEventListener("resize", handleWindowResize);
+  applyThemeToDocument(themeMode.value);
   void refreshAccounts();
   resetAutoRefreshTimer();
 });
 
 onBeforeUnmount(() => {
-  window.removeEventListener("resize", handleWindowResize);
+  stopDividerDrag();
   if (autoRefreshTimer) {
     clearInterval(autoRefreshTimer);
-  }
-  if (detailRefreshTimer) {
-    clearInterval(detailRefreshTimer);
   }
 });
 </script>
@@ -906,163 +768,140 @@ onBeforeUnmount(() => {
     :locale="zhCN"
     :date-locale="dateZhCN"
   >
-    <NLayout has-sider class="app-shell">
-      <SidebarNav
-        :value="selectedMenuKey"
-        :expanded-keys="expandedMenuKeys"
-        :options="menuOptions"
-        @update:value="handleMenuSelect"
-        @update:expanded-keys="handleExpandedKeys"
-      />
+    <div class="app-shell">
+      <header class="app-toolbar">
+        <div class="app-toolbar__title">
+          <h1>账号额度面板</h1>
+          <p>左侧 sub2api，右侧 cpa，卡片按配置规则排序</p>
+        </div>
+        <NSpace align="center" wrap>
+          <NSelect
+            :value="autoRefreshSeconds"
+            :options="autoRefreshOptions"
+            style="width: 170px"
+            @update:value="(value) => (autoRefreshSeconds = value)"
+          />
+          <NButton type="primary" :loading="loading" @click="refreshAccounts()">
+            刷新数据
+          </NButton>
+          <NButton tertiary @click="toggleTheme">
+            {{ isDark ? "切换浅色" : "切换深色" }}
+          </NButton>
+        </NSpace>
+      </header>
 
-      <NLayout :native-scrollbar="false">
-        <NLayoutHeader class="page-header">
-          <div class="page-header__left">
-            <h2>{{ pageTitle }}</h2>
-            <p>{{ pageSubtitle }}</p>
+      <p v-if="errors.length" class="error-strip">
+        {{ errors[0] }}
+      </p>
+
+      <main
+        ref="splitContainerRef"
+        class="account-split"
+        :class="{ 'account-split--dragging': isDraggingDivider }"
+      >
+        <section class="platform-pane" :style="leftPaneStyle">
+          <div class="platform-pane__head">
+            <h2>sub2api</h2>
+            <div class="platform-pane__head-meta">
+              <span class="platform-pane__total">{{ sub2apiAccounts.length }} 个账号</span>
+              <div class="platform-pane__status-list">
+                <span class="status-chip status-chip--normal">正常 {{ sub2apiStateSummary.normal }}</span>
+                <span class="status-chip status-chip--exhausted">用尽 {{ sub2apiStateSummary.exhausted }}</span>
+                <span class="status-chip status-chip--disabled">停用 {{ sub2apiStateSummary.disabled }}</span>
+                <span class="status-chip status-chip--error">异常 {{ sub2apiStateSummary.error }}</span>
+              </div>
+              <div class="platform-pane__quota-list">
+                <span class="quota-chip">高 {{ formatQuotaValue(sub2apiQuotaSummary.max) }}</span>
+                <span class="quota-chip">低 {{ formatQuotaValue(sub2apiQuotaSummary.min) }}</span>
+                <span class="quota-chip">均 {{ formatQuotaValue(sub2apiQuotaSummary.avg) }}</span>
+              </div>
+            </div>
           </div>
-          <NSpace>
-            <NSelect
-              v-if="currentView === 'dashboard' || currentView === 'accounts'"
-              :value="autoRefreshSeconds"
-              :options="autoRefreshOptions"
-              style="width: 170px"
-              @update:value="(value) => (autoRefreshSeconds = value)"
-            />
-            <NButton
-              v-if="currentView === 'dashboard' || currentView === 'accounts'"
-              type="primary"
-              :loading="loading"
-              @click="refreshAccounts()"
-            >
-              刷新数据
-            </NButton>
-            <NButton tertiary @click="toggleTheme">
-              {{ isDark ? "切换浅色" : "切换深色" }}
-            </NButton>
-          </NSpace>
-        </NLayoutHeader>
-
-        <NLayoutContent class="content" :native-scrollbar="false">
-          <template v-if="currentView === 'dashboard'">
-            <div class="dashboard-view">
-              <AccountStatsGrid
-                :total="dashboardTotal"
-                :healthy="dashboardHealthy"
-                :warning="dashboardWarning"
-                :error="dashboardError"
-                :total-transferred-tokens="dashboardTransferredTokens"
+          <NScrollbar class="pane-scroll">
+            <div class="card-grid">
+              <AccountQuotaCard
+                v-for="account in sub2apiAccounts"
+                :key="account.uid"
+                :account="account"
+                :metrics="getMetrics(account)"
+                @copy-email="handleCopyEmail"
               />
-              <PlatformQuotaSummaryGrid :summaries="platformQuotaSummaries" />
-              <PlatformTrendChart
-                :labels="usageTrend.labels"
-                :sub2api-values="usageTrend.sub2apiValues"
-                :cpa-values="usageTrend.cpaValues"
-              />
+              <p v-if="!sub2apiAccounts.length" class="pane-empty">暂无账号</p>
             </div>
-          </template>
+          </NScrollbar>
+        </section>
 
-          <template v-else-if="currentView === 'accounts'">
-            <div class="accounts-view">
-              <AccountTable
-                class="panel-card"
-                :title="currentTableTitle"
-                :accounts="accountsForCurrentTab"
-                :loading="loading"
-                :table-max-height="accountsTableMaxHeight"
-                :keyword="accountKeyword"
-                :selected-row-keys="selectedRowKeys"
-                :selected-count="selectedAccounts.length"
-                :row-loading-map="rowLoadingMap"
-                :action-loading="actionLoading"
-                @update:keyword="(value) => (accountKeyword = value)"
-                @update:selected-row-keys="(keys) => (selectedRowKeys = keys)"
-                @open-detail="openAccountDetail"
-                @open-edit="openEditForAccount"
-                @toggle-account="handleToggleAccount"
-                @batch-enable="runBatchEnable"
-                @open-batch-edit="openBatchEditModal"
-                @clear-selection="clearSelection"
-              />
+        <div
+          class="split-divider"
+          role="separator"
+          aria-orientation="vertical"
+          tabindex="0"
+          @pointerdown="startDividerDrag"
+          @keydown.left.prevent="adjustSplitByKeyboard(-2)"
+          @keydown.right.prevent="adjustSplitByKeyboard(2)"
+        >
+          <span class="split-divider__dot" />
+        </div>
+
+        <section class="platform-pane" :style="rightPaneStyle">
+          <div class="platform-pane__head">
+            <h2>cpa</h2>
+            <div class="platform-pane__head-meta">
+              <span class="platform-pane__total">{{ cpaAccounts.length }} 个账号</span>
+              <div class="platform-pane__status-list">
+                <span class="status-chip status-chip--normal">正常 {{ cpaStateSummary.normal }}</span>
+                <span class="status-chip status-chip--exhausted">用尽 {{ cpaStateSummary.exhausted }}</span>
+                <span class="status-chip status-chip--disabled">停用 {{ cpaStateSummary.disabled }}</span>
+                <span class="status-chip status-chip--error">异常 {{ cpaStateSummary.error }}</span>
+              </div>
+              <div class="platform-pane__quota-list">
+                <span class="quota-chip">高 {{ formatQuotaValue(cpaQuotaSummary.max) }}</span>
+                <span class="quota-chip">低 {{ formatQuotaValue(cpaQuotaSummary.min) }}</span>
+                <span class="quota-chip">均 {{ formatQuotaValue(cpaQuotaSummary.avg) }}</span>
+              </div>
             </div>
-          </template>
+          </div>
+          <NScrollbar class="pane-scroll">
+            <div class="card-grid">
+              <AccountQuotaCard
+                v-for="account in cpaAccounts"
+                :key="account.uid"
+                :account="account"
+                :metrics="getMetrics(account)"
+                @copy-email="handleCopyEmail"
+              />
+              <p v-if="!cpaAccounts.length" class="pane-empty">暂无账号</p>
+            </div>
+          </NScrollbar>
+        </section>
+      </main>
 
-          <template v-else-if="currentView === 'config'">
-            <PlatformConfigPanel
-              :platforms="platforms"
-              :test-loading="testLoading"
-              :check-messages="checkMessages"
-              @update-platform-field="updatePlatformField"
-              @save-settings="saveSettings"
-              @test-platform="testConnection"
-            />
-          </template>
+      <NButton
+        class="floating-config-button"
+        type="primary"
+        circle
+        size="large"
+        @click="showConfigModal = true"
+      >
+        <template #icon>
+          <NIcon size="22">
+            <SettingsOutline />
+          </NIcon>
+        </template>
+      </NButton>
 
-          <template v-else>
-            <NCard title="关于" size="small" class="panel-card">
-              <p>这是一个用于统一管理 sub2api 与 cpa 账号的前端管理平台。</p>
-              <p>当前版本支持：</p>
-              <p>1. 仪表盘状态概览</p>
-              <p>2. 分平台账号管理（由左侧菜单切换）</p>
-              <p>3. 账号详情、启停、单条编辑、批量操作</p>
-              <p>4. 平台连接配置与连通性测试</p>
-            </NCard>
-          </template>
-        </NLayoutContent>
-      </NLayout>
-    </NLayout>
-
-    <AccountDetailModal
-      :show="showDetailModal"
-      :target="detailTarget"
-      :loading="detailLoading"
-      :error="detailError"
-      :profile-text="detailProfileText"
-      :stats-text="detailStatsText"
-      :models-text="detailModelsText"
-      :refreshed-at-text="detailRefreshedAtText"
-      :auto-refresh="detailAutoRefresh"
-      :refresh-seconds="detailRefreshSeconds"
-      :refresh-options="detailRefreshOptions"
-      @update:show="(value) => (showDetailModal = value)"
-      @refresh="loadAccountDetail(false)"
-      @update:auto-refresh="(value) => (detailAutoRefresh = value)"
-      @update:refresh-seconds="(value) => (detailRefreshSeconds = value)"
-    />
-
-    <EditAccountModal
-      :show="showEditModal"
-      :supports-name="editSupportsName"
-      :name="editName"
-      :note="editNote"
-      :priority-text="editPriorityText"
-      :saving="editSaving"
-      @update:show="(value) => (showEditModal = value)"
-      @update:name="(value) => (editName = value)"
-      @update:note="(value) => (editNote = value)"
-      @update:priority-text="(value) => (editPriorityText = value)"
-      @save="saveEdit"
-    />
-
-    <BatchEditModal
-      :show="showBatchEditModal"
-      :saving="batchSaving"
-      :selected-count="selectedAccounts.length"
-      :apply-note="batchApplyNote"
-      :apply-priority="batchApplyPriority"
-      :note="batchNote"
-      :priority-text="batchPriorityText"
-      @update:show="(value) => (showBatchEditModal = value)"
-      @update:apply-note="(value) => (batchApplyNote = value)"
-      @update:apply-priority="(value) => (batchApplyPriority = value)"
-      @update:note="(value) => (batchNote = value)"
-      @update:priority-text="(value) => (batchPriorityText = value)"
-      @save="saveBatchEdit"
-    />
+      <FloatingConfigModal
+        :show="showConfigModal"
+        :platforms="platforms"
+        :test-loading="testLoading"
+        :check-messages="checkMessages"
+        :sort-settings="sortSettings"
+        @update:show="(value) => (showConfigModal = value)"
+        @update-platform-field="updatePlatformField"
+        @update-sort-setting="updateSortSetting"
+        @save-settings="saveSettings"
+        @test-platform="testConnection"
+      />
+    </div>
   </NConfigProvider>
 </template>
-
-
-
-
-
