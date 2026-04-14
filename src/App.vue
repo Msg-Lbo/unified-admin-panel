@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { SettingsOutline } from "@vicons/ionicons5";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import {
@@ -12,6 +12,7 @@ import {
   NInput,
   NScrollbar,
   NSelect,
+  NSwitch,
   NSpace,
   zhCN
 } from "naive-ui";
@@ -250,6 +251,10 @@ const themeMode = ref<"light" | "dark">(loadThemeMode());
 const autoRefreshSeconds = ref<number>(loadAutoRefreshSeconds());
 const splitRatio = ref<number>(loadSplitRatio());
 const currentYear = new Date().getFullYear();
+const markSub2apiHighest = ref(true);
+const markSub2apiLowest = ref(true);
+const markCpaHighest = ref(true);
+const markCpaLowest = ref(true);
 const isAuthenticated = ref(loadAuthSession());
 const loginPassword = ref("");
 const loginToken = ref("");
@@ -728,6 +733,36 @@ function summarizeQuotaTotals(list: UnifiedAccount[]): {
   };
 }
 
+function buildQuotaMarkUidSet(
+  list: UnifiedAccount[],
+  mode: "highest" | "lowest"
+): Set<string> {
+  const candidates = list
+    .map((account) => ({
+      uid: account.uid,
+      quota: getMetrics(account).usdQuotaValue
+    }))
+    .filter(
+      (item): item is { uid: string; quota: number } =>
+        typeof item.quota === "number" && Number.isFinite(item.quota) && item.quota > 0
+    );
+
+  if (!candidates.length) {
+    return new Set<string>();
+  }
+
+  const targetValue =
+    mode === "highest"
+      ? Math.max(...candidates.map((item) => item.quota))
+      : Math.min(...candidates.map((item) => item.quota));
+
+  return new Set(
+    candidates
+      .filter((item) => Math.abs(item.quota - targetValue) < Number.EPSILON)
+      .map((item) => item.uid)
+  );
+}
+
 function resolveAccountState(account: UnifiedAccount): AccountStateKind {
   const metrics = getMetrics(account);
   if (metrics.exhausted) {
@@ -857,6 +892,14 @@ const sub2apiStateSummary = computed(() => summarizeAccountStates(sub2apiAccount
 const cpaStateSummary = computed(() => summarizeAccountStates(cpaAccounts.value));
 const sub2apiQuotaSummary = computed(() => summarizeQuotaTotals(sub2apiAccounts.value));
 const cpaQuotaSummary = computed(() => summarizeQuotaTotals(cpaAccounts.value));
+const sub2apiHighestUidSet = computed(() =>
+  buildQuotaMarkUidSet(sub2apiAccounts.value, "highest")
+);
+const sub2apiLowestUidSet = computed(() =>
+  buildQuotaMarkUidSet(sub2apiAccounts.value, "lowest")
+);
+const cpaHighestUidSet = computed(() => buildQuotaMarkUidSet(cpaAccounts.value, "highest"));
+const cpaLowestUidSet = computed(() => buildQuotaMarkUidSet(cpaAccounts.value, "lowest"));
 
 const contextMenuOptions = computed(() => {
   const account = contextMenuAccount.value;
@@ -1166,21 +1209,26 @@ onBeforeUnmount(() => {
           <h1>账号额度面板</h1>
           <p>左侧 sub2api，右侧 cpa，卡片按配置规则排序</p>
         </div>
-        <NSpace align="center" wrap>
-          <NSelect
-            :value="autoRefreshSeconds"
-            :options="autoRefreshOptions"
-            style="width: 170px"
-            @update:value="(value) => (autoRefreshSeconds = value)"
-          />
-          <NButton type="primary" :loading="loading" @click="refreshAccounts()">
-            刷新数据
-          </NButton>
-          <NButton tertiary @click="toggleTheme">
-            {{ isDark ? "切换浅色" : "切换深色" }}
-          </NButton>
-          <NButton tertiary @click="logout">退出登录</NButton>
-        </NSpace>
+        <div class="app-toolbar__actions">
+          <NSpace align="center" wrap>
+            <NSelect
+              :value="autoRefreshSeconds"
+              :options="autoRefreshOptions"
+              style="width: 170px"
+              @update:value="(value) => (autoRefreshSeconds = value)"
+            />
+            <NButton type="primary" :loading="loading" @click="refreshAccounts()">
+              刷新数据
+            </NButton>
+            <NButton tertiary @click="toggleTheme">
+              {{ isDark ? "切换浅色" : "切换深色" }}
+            </NButton>
+            <NButton tertiary @click="logout">退出登录</NButton>
+          </NSpace>
+          <p class="app-toolbar__quota-tip">
+            账号总额度根据已使用额度+官方计费来计算,仅供参考
+          </p>
+        </div>
       </header>
 
       <p v-if="errors.length" class="error-strip">
@@ -1194,7 +1242,19 @@ onBeforeUnmount(() => {
       >
         <section class="platform-pane" :style="leftPaneStyle">
           <div class="platform-pane__head">
-            <h2>sub2api</h2>
+            <div class="platform-pane__head-left">
+              <h2>sub2api</h2>
+              <div class="platform-pane__switches">
+                <label class="platform-pane__switch-item">
+                  <NSwitch v-model:value="markSub2apiHighest" size="small" />
+                  <span>标记最高</span>
+                </label>
+                <label class="platform-pane__switch-item">
+                  <NSwitch v-model:value="markSub2apiLowest" size="small" />
+                  <span>标记最低</span>
+                </label>
+              </div>
+            </div>
             <div class="platform-pane__head-meta">
               <span class="platform-pane__total">{{ sub2apiAccounts.length }} 个账号</span>
               <div class="platform-pane__status-list">
@@ -1218,6 +1278,8 @@ onBeforeUnmount(() => {
                 :data-uid="account.uid"
                 :account="account"
                 :metrics="getMetrics(account)"
+                :mark-highest="markSub2apiHighest && sub2apiHighestUidSet.has(account.uid)"
+                :mark-lowest="markSub2apiLowest && sub2apiLowestUidSet.has(account.uid)"
                 @copy-email="handleCopyEmail"
                 @open-context-menu="openContextMenu"
               />
@@ -1240,7 +1302,19 @@ onBeforeUnmount(() => {
 
         <section class="platform-pane" :style="rightPaneStyle">
           <div class="platform-pane__head">
-            <h2>cpa</h2>
+            <div class="platform-pane__head-left">
+              <h2>cpa</h2>
+              <div class="platform-pane__switches">
+                <label class="platform-pane__switch-item">
+                  <NSwitch v-model:value="markCpaHighest" size="small" />
+                  <span>标记最高</span>
+                </label>
+                <label class="platform-pane__switch-item">
+                  <NSwitch v-model:value="markCpaLowest" size="small" />
+                  <span>标记最低</span>
+                </label>
+              </div>
+            </div>
             <div class="platform-pane__head-meta">
               <span class="platform-pane__total">{{ cpaAccounts.length }} 个账号</span>
               <div class="platform-pane__status-list">
@@ -1264,6 +1338,8 @@ onBeforeUnmount(() => {
                 :data-uid="account.uid"
                 :account="account"
                 :metrics="getMetrics(account)"
+                :mark-highest="markCpaHighest && cpaHighestUidSet.has(account.uid)"
+                :mark-lowest="markCpaLowest && cpaLowestUidSet.has(account.uid)"
                 @copy-email="handleCopyEmail"
                 @open-context-menu="openContextMenu"
               />
@@ -1356,3 +1432,4 @@ onBeforeUnmount(() => {
     </div>
   </NConfigProvider>
 </template>
+

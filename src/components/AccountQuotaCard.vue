@@ -6,6 +6,8 @@ import type { QuotaCardMetrics } from "../utils/quotaCard";
 const props = defineProps<{
   account: UnifiedAccount;
   metrics: QuotaCardMetrics;
+  markHighest?: boolean;
+  markLowest?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -268,7 +270,9 @@ function handleContextMenu(event: MouseEvent): void {
     :class="{
       'account-card--exhausted': metrics.exhausted,
       'account-card--updating': isUpdating,
-      'account-card--background-lowering': isBackgroundLowering
+      'account-card--background-lowering': isBackgroundLowering,
+      'account-card--mark-highest': markHighest,
+      'account-card--mark-lowest': markLowest
     }"
     :style="cardStyle"
     role="button"
@@ -286,6 +290,12 @@ function handleContextMenu(event: MouseEvent): void {
         </span>
         <span class="account-card__type" :class="`account-card__type--${planType}`">
           {{ planType }}
+        </span>
+        <span v-if="markHighest" class="account-card__mark account-card__mark--highest">
+          最高
+        </span>
+        <span v-if="markLowest" class="account-card__mark account-card__mark--lowest">
+          最低
         </span>
       </div>
     </header>
