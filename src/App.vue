@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { SettingsOutline } from "@vicons/ionicons5";
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import {
   createDiscreteApi,
   darkTheme,
   dateZhCN,
   NButton,
   NConfigProvider,
+  NDropdown,
   NIcon,
   NScrollbar,
   NSelect,
@@ -218,6 +219,7 @@ const sortSettings = ref<PlatformSortSettings>(loadSortSettings());
 const themeMode = ref<"light" | "dark">(loadThemeMode());
 const autoRefreshSeconds = ref<number>(loadAutoRefreshSeconds());
 const splitRatio = ref<number>(loadSplitRatio());
+const currentYear = new Date().getFullYear();
 
 const loading = ref(false);
 const refreshing = ref(false);
@@ -237,6 +239,17 @@ const accounts = ref<UnifiedAccount[]>([]);
 const errors = ref<string[]>([]);
 
 const splitContainerRef = ref<HTMLElement | null>(null);
+const leftGridRef = ref<HTMLElement | null>(null);
+const rightGridRef = ref<HTMLElement | null>(null);
+const contextMenuVisible = ref(false);
+const contextMenuX = ref(0);
+const contextMenuY = ref(0);
+const contextMenuAccount = ref<UnifiedAccount | null>(null);
+const singleRefreshLoadingUid = ref<string | null>(null);
+let splitFlipFrame: number | null = null;
+const flipAnimationMap = new WeakMap<HTMLElement, Animation>();
+let dragMoveFrame: number | null = null;
+let latestDragClientX: number | null = null;
 
 const isDark = computed(() => themeMode.value === "dark");
 const themeOverrides = {
@@ -442,6 +455,37 @@ async function testConnection(platformId: PlatformKind): Promise<void> {
   testLoading.value[platformId] = false;
 }
 
+function toRecord(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  return value as Record<string, unknown>;
+}
+
+function pickFirstText(values: unknown[]): string | undefined {
+  for (const item of values) {
+    if (typeof item !== "string") {
+      continue;
+    }
+    const normalized = item.trim();
+    if (normalized) {
+      return normalized;
+    }
+  }
+  return undefined;
+}
+
+function resolveAccessToken(account: UnifiedAccount): string | undefined {
+  const raw = toRecord(account.raw);
+  const credentials = toRecord(raw?.credentials);
+  return pickFirstText([
+    credentials?.access_token,
+    credentials?.accessToken,
+    raw?.access_token,
+    raw?.accessToken
+  ]);
+}
+
 function copyTextBySelection(text: string): boolean {
   const textarea = document.createElement("textarea");
   textarea.value = text;
@@ -455,10 +499,14 @@ function copyTextBySelection(text: string): boolean {
   return success;
 }
 
-async function handleCopyEmail(email: string): Promise<void> {
-  const normalized = email.trim();
+async function copyWithFeedback(payload: {
+  value: string;
+  successMessage: string;
+  emptyMessage: string;
+}): Promise<void> {
+  const normalized = payload.value.trim();
   if (!normalized) {
-    notify("warning", "该账号没有可复制的邮箱。");
+    notify("warning", payload.emptyMessage);
     return;
   }
 
@@ -468,12 +516,80 @@ async function handleCopyEmail(email: string): Promise<void> {
     } else {
       const ok = copyTextBySelection(normalized);
       if (!ok) {
-        throw new Error("复制失败");
+        throw new Error("copy-failed");
       }
     }
-    notify("success", `已复制邮箱：${normalized}`);
+    notify("success", payload.successMessage);
   } catch {
     notify("error", "复制失败，请检查浏览器权限。");
+  }
+}
+
+async function handleCopyEmail(email: string): Promise<void> {
+  await copyWithFeedback({
+    value: email,
+    successMessage: `已复制邮箱：${email.trim()}`,
+    emptyMessage: "该账号没有可复制的邮箱。"
+  });
+}
+
+async function handleCopyAccessToken(account: UnifiedAccount): Promise<void> {
+  const token = resolveAccessToken(account);
+  await copyWithFeedback({
+    value: token ?? "",
+    successMessage: "已复制 accessToken。",
+    emptyMessage: "该账号没有可复制的 accessToken。"
+  });
+}
+
+function closeContextMenu(): void {
+  contextMenuVisible.value = false;
+  contextMenuAccount.value = null;
+}
+
+function openContextMenu(payload: {
+  account: UnifiedAccount;
+  x: number;
+  y: number;
+}): void {
+  contextMenuAccount.value = payload.account;
+  contextMenuX.value = payload.x;
+  contextMenuY.value = payload.y;
+  contextMenuVisible.value = true;
+}
+
+async function refreshSingleAccount(account: UnifiedAccount): Promise<void> {
+  if (singleRefreshLoadingUid.value === account.uid) {
+    return;
+  }
+
+  const platform = getPlatformConfig(account.platform);
+  saveSettings({ silent: true });
+  singleRefreshLoadingUid.value = account.uid;
+  try {
+    const result = await fetchAccountsForPlatform(platform);
+    if (result.error) {
+      throw new Error(result.error);
+    }
+
+    const refreshed =
+      result.accounts.find((item) => item.uid === account.uid) ??
+      result.accounts.find((item) => item.manageKey === account.manageKey) ??
+      result.accounts.find((item) => item.accountId === account.accountId);
+
+    if (!refreshed) {
+      notify("warning", "未找到该账号的最新数据。");
+      return;
+    }
+
+    accounts.value = accounts.value.map((item) =>
+      item.uid === account.uid ? refreshed : item
+    );
+    notify("success", `已刷新 ${account.email ?? account.name}。`);
+  } catch (error) {
+    notify("error", parseErrorMessage(error));
+  } finally {
+    singleRefreshLoadingUid.value = null;
   }
 }
 
@@ -669,6 +785,56 @@ const cpaStateSummary = computed(() => summarizeAccountStates(cpaAccounts.value)
 const sub2apiQuotaSummary = computed(() => summarizeQuotaTotals(sub2apiAccounts.value));
 const cpaQuotaSummary = computed(() => summarizeQuotaTotals(cpaAccounts.value));
 
+const contextMenuOptions = computed(() => {
+  const account = contextMenuAccount.value;
+  const hasEmail = Boolean(account?.email?.trim());
+  const hasAccessToken = Boolean(account && resolveAccessToken(account));
+  const refreshingCurrent =
+    Boolean(account) && singleRefreshLoadingUid.value === account?.uid;
+
+  return [
+    {
+      label: "复制邮箱",
+      key: "copy-email",
+      disabled: !hasEmail
+    },
+    {
+      label: "复制 accessToken",
+      key: "copy-access-token",
+      disabled: !hasAccessToken
+    },
+    {
+      type: "divider",
+      key: "divider"
+    },
+    {
+      label: refreshingCurrent ? "刷新中..." : "刷新该账号",
+      key: "refresh-account",
+      disabled: refreshingCurrent
+    }
+  ];
+});
+
+async function handleContextMenuSelect(key: string | number): Promise<void> {
+  const account = contextMenuAccount.value;
+  closeContextMenu();
+  if (!account) {
+    return;
+  }
+
+  if (key === "copy-email") {
+    await handleCopyEmail(account.email ?? "");
+    return;
+  }
+  if (key === "copy-access-token") {
+    await handleCopyAccessToken(account);
+    return;
+  }
+  if (key === "refresh-account") {
+    await refreshSingleAccount(account);
+  }
+}
+
 const leftPaneStyle = computed(() => ({
   flexBasis: `${splitRatio.value}%`
 }));
@@ -676,7 +842,111 @@ const rightPaneStyle = computed(() => ({
   flexBasis: `${100 - splitRatio.value}%`
 }));
 
-function updateSplitByClientX(clientX: number): void {
+function captureCardPositions(container: HTMLElement | null): Map<string, DOMRect> {
+  const map = new Map<string, DOMRect>();
+  if (!container) {
+    return map;
+  }
+  const cards = container.querySelectorAll<HTMLElement>(".account-card[data-uid]");
+  for (const card of cards) {
+    const uid = card.dataset.uid;
+    if (!uid) {
+      continue;
+    }
+    map.set(uid, card.getBoundingClientRect());
+  }
+  return map;
+}
+
+function playFlipForContainer(
+  container: HTMLElement | null,
+  previousPositions: Map<string, DOMRect>,
+  duration: number
+): void {
+  if (!container || !previousPositions.size) {
+    return;
+  }
+  const cards = container.querySelectorAll<HTMLElement>(".account-card[data-uid]");
+  for (const card of cards) {
+    const uid = card.dataset.uid;
+    if (!uid) {
+      continue;
+    }
+    const previousRect = previousPositions.get(uid);
+    if (!previousRect) {
+      continue;
+    }
+    const nextRect = card.getBoundingClientRect();
+    const deltaX = previousRect.left - nextRect.left;
+    const deltaY = previousRect.top - nextRect.top;
+    if (Math.abs(deltaX) < 0.5 && Math.abs(deltaY) < 0.5) {
+      continue;
+    }
+
+    const previousAnimation = flipAnimationMap.get(card);
+    previousAnimation?.cancel();
+    const animation = card.animate(
+      [
+        { transform: `translate(${deltaX}px, ${deltaY}px)` },
+        { transform: "translate(0, 0)" }
+      ],
+      {
+        duration,
+        easing: "ease-out"
+      }
+    );
+    flipAnimationMap.set(card, animation);
+    animation.onfinish = () => {
+      if (flipAnimationMap.get(card) === animation) {
+        flipAnimationMap.delete(card);
+      }
+    };
+  }
+}
+
+function animateCardReflowAfterSplit(
+  previousLeft: Map<string, DOMRect>,
+  previousRight: Map<string, DOMRect>,
+  duration: number
+): void {
+  void nextTick(() => {
+    if (splitFlipFrame) {
+      cancelAnimationFrame(splitFlipFrame);
+    }
+    splitFlipFrame = requestAnimationFrame(() => {
+      playFlipForContainer(leftGridRef.value, previousLeft, duration);
+      playFlipForContainer(rightGridRef.value, previousRight, duration);
+      splitFlipFrame = null;
+    });
+  });
+}
+
+function updateSplitRatio(
+  normalized: number,
+  options?: { animate?: boolean; duration?: number }
+): void {
+  if (Math.abs(normalized - splitRatio.value) < 0.1) {
+    return;
+  }
+  const shouldAnimate = options?.animate ?? !isDraggingDivider.value;
+  if (!shouldAnimate) {
+    splitRatio.value = normalized;
+    return;
+  }
+  const previousLeft = captureCardPositions(leftGridRef.value);
+  const previousRight = captureCardPositions(rightGridRef.value);
+  splitRatio.value = normalized;
+  animateCardReflowAfterSplit(
+    previousLeft,
+    previousRight,
+    options?.duration ?? 520
+  );
+}
+
+function updateSplitByClientX(
+  clientX: number,
+  options?: { animate?: boolean; duration?: number }
+): void {
   const container = splitContainerRef.value;
   if (!container) {
     return;
@@ -686,7 +956,24 @@ function updateSplitByClientX(clientX: number): void {
     return;
   }
   const next = ((clientX - rect.left) / rect.width) * 100;
-  splitRatio.value = Math.max(20, Math.min(80, next));
+  const normalized = Math.max(20, Math.min(80, next));
+  updateSplitRatio(normalized, options);
+}
+
+function flushDragMoveFrame(): void {
+  dragMoveFrame = null;
+  if (!isDraggingDivider.value || latestDragClientX === null) {
+    return;
+  }
+  updateSplitByClientX(latestDragClientX, { animate: false });
+}
+
+function scheduleDragSplitUpdate(clientX: number): void {
+  latestDragClientX = clientX;
+  if (dragMoveFrame !== null) {
+    return;
+  }
+  dragMoveFrame = requestAnimationFrame(flushDragMoveFrame);
 }
 
 function stopDividerDrag(): void {
@@ -694,6 +981,11 @@ function stopDividerDrag(): void {
     return;
   }
   isDraggingDivider.value = false;
+  latestDragClientX = null;
+  if (dragMoveFrame !== null) {
+    cancelAnimationFrame(dragMoveFrame);
+    dragMoveFrame = null;
+  }
   window.removeEventListener("pointermove", handleDividerPointerMove);
   window.removeEventListener("pointerup", stopDividerDrag);
 }
@@ -702,7 +994,7 @@ function handleDividerPointerMove(event: PointerEvent): void {
   if (!isDraggingDivider.value) {
     return;
   }
-  updateSplitByClientX(event.clientX);
+  scheduleDragSplitUpdate(event.clientX);
 }
 
 function startDividerDrag(event: PointerEvent): void {
@@ -710,13 +1002,15 @@ function startDividerDrag(event: PointerEvent): void {
     return;
   }
   isDraggingDivider.value = true;
-  updateSplitByClientX(event.clientX);
+  latestDragClientX = event.clientX;
+  updateSplitByClientX(event.clientX, { animate: false });
   window.addEventListener("pointermove", handleDividerPointerMove);
   window.addEventListener("pointerup", stopDividerDrag);
 }
 
 function adjustSplitByKeyboard(delta: number): void {
-  splitRatio.value = Math.max(20, Math.min(80, splitRatio.value + delta));
+  const next = Math.max(20, Math.min(80, splitRatio.value + delta));
+  updateSplitRatio(next, { animate: true, duration: 620 });
 }
 
 let autoRefreshTimer: ReturnType<typeof setInterval> | null = null;
@@ -757,6 +1051,14 @@ onBeforeUnmount(() => {
   stopDividerDrag();
   if (autoRefreshTimer) {
     clearInterval(autoRefreshTimer);
+  }
+  if (dragMoveFrame !== null) {
+    cancelAnimationFrame(dragMoveFrame);
+    dragMoveFrame = null;
+  }
+  if (splitFlipFrame) {
+    cancelAnimationFrame(splitFlipFrame);
+    splitFlipFrame = null;
   }
 });
 </script>
@@ -818,13 +1120,15 @@ onBeforeUnmount(() => {
             </div>
           </div>
           <NScrollbar class="pane-scroll">
-            <div class="card-grid">
+            <div ref="leftGridRef" class="card-grid">
               <AccountQuotaCard
                 v-for="account in sub2apiAccounts"
                 :key="account.uid"
+                :data-uid="account.uid"
                 :account="account"
                 :metrics="getMetrics(account)"
                 @copy-email="handleCopyEmail"
+                @open-context-menu="openContextMenu"
               />
               <p v-if="!sub2apiAccounts.length" class="pane-empty">暂无账号</p>
             </div>
@@ -862,19 +1166,55 @@ onBeforeUnmount(() => {
             </div>
           </div>
           <NScrollbar class="pane-scroll">
-            <div class="card-grid">
+            <div ref="rightGridRef" class="card-grid">
               <AccountQuotaCard
                 v-for="account in cpaAccounts"
                 :key="account.uid"
+                :data-uid="account.uid"
                 :account="account"
                 :metrics="getMetrics(account)"
                 @copy-email="handleCopyEmail"
+                @open-context-menu="openContextMenu"
               />
               <p v-if="!cpaAccounts.length" class="pane-empty">暂无账号</p>
             </div>
           </NScrollbar>
         </section>
       </main>
+
+      <footer class="app-footer">
+        <div class="app-footer__inner">
+          <span>Copyright © {{ currentYear }}</span>
+          <a
+            class="app-footer__link"
+            href="https://github.com/Msg-Lbo"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Msg-Lbo
+          </a>
+          <span class="app-footer__divider">|</span>
+          <a
+            class="app-footer__link"
+            href="https://github.com/Msg-Lbo/unified-admin-panel"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            项目 GitHub
+          </a>
+        </div>
+      </footer>
+
+      <NDropdown
+        trigger="manual"
+        placement="bottom-start"
+        :show="contextMenuVisible"
+        :x="contextMenuX"
+        :y="contextMenuY"
+        :options="contextMenuOptions"
+        @clickoutside="closeContextMenu"
+        @select="handleContextMenuSelect"
+      />
 
       <NButton
         class="floating-config-button"

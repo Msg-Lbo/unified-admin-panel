@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import type { UnifiedAccount } from "../types/platform";
 import type { QuotaCardMetrics } from "../utils/quotaCard";
 
@@ -10,6 +10,10 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (event: "copy-email", email: string): void;
+  (
+    event: "open-context-menu",
+    payload: { account: UnifiedAccount; x: number; y: number }
+  ): void;
 }>();
 
 type PlanType = "free" | "plus" | "team" | "pro" | "unknown";
@@ -137,6 +141,60 @@ const statusLabel = computed(() => {
 
 const displayEmail = computed(() => props.account.email?.trim() || "-");
 const planType = computed<PlanType>(() => resolvePlanTypeFromAccount(props.account));
+const isUpdating = ref(false);
+const isBackgroundLowering = ref(false);
+
+const resolvedUsedPercent = computed(() =>
+  Math.max(
+    0,
+    Math.min(
+      100,
+      props.metrics.usedPercent ??
+        (typeof props.metrics.remainingPercent === "number"
+          ? 100 - props.metrics.remainingPercent
+          : 38)
+    )
+  )
+);
+
+const resolvedRemainingPercent = computed(() =>
+  Math.max(0, Math.min(100, 100 - resolvedUsedPercent.value))
+);
+
+const metricSignature = computed(
+  () =>
+    `${props.metrics.totalText}|${props.metrics.usedText}|${props.metrics.remainingPercent ?? ""}|${props.metrics.usedPercent ?? ""}|${props.metrics.exhausted ? "1" : "0"}`
+);
+
+let mountedOnce = false;
+let updateTimer: ReturnType<typeof setTimeout> | null = null;
+
+watch(metricSignature, () => {
+  if (!mountedOnce) {
+    mountedOnce = true;
+    return;
+  }
+  isUpdating.value = true;
+  if (updateTimer) {
+    clearTimeout(updateTimer);
+  }
+  updateTimer = setTimeout(() => {
+    isUpdating.value = false;
+  }, 520);
+});
+
+watch(resolvedRemainingPercent, (next, previous) => {
+  if (typeof previous !== "number") {
+    return;
+  }
+  isBackgroundLowering.value = next < previous;
+});
+
+onBeforeUnmount(() => {
+  if (updateTimer) {
+    clearTimeout(updateTimer);
+  }
+});
 
 const cardStyle = computed<Record<string, string>>(() => {
   if (props.metrics.exhausted) {
@@ -146,17 +204,7 @@ const cardStyle = computed<Record<string, string>>(() => {
     };
   }
 
-  const usedPercent = Math.max(
-    0,
-    Math.min(
-      100,
-      props.metrics.usedPercent ??
-        (typeof props.metrics.remainingPercent === "number"
-          ? 100 - props.metrics.remainingPercent
-          : 38)
-    )
-  );
-  const remainingPercent = Math.max(0, Math.min(100, 100 - usedPercent));
+  const remainingPercent = resolvedRemainingPercent.value;
 
   return {
     background: `
@@ -183,18 +231,31 @@ function handleCopyEmail(): void {
   }
   emit("copy-email", displayEmail.value);
 }
+
+function handleContextMenu(event: MouseEvent): void {
+  emit("open-context-menu", {
+    account: props.account,
+    x: event.clientX,
+    y: event.clientY
+  });
+}
 </script>
 
 <template>
   <article
     class="account-card account-card--clickable"
-    :class="{ 'account-card--exhausted': metrics.exhausted }"
+    :class="{
+      'account-card--exhausted': metrics.exhausted,
+      'account-card--updating': isUpdating,
+      'account-card--background-lowering': isBackgroundLowering
+    }"
     :style="cardStyle"
     role="button"
     tabindex="0"
     @click="handleCopyEmail"
     @keydown.enter.prevent="handleCopyEmail"
     @keydown.space.prevent="handleCopyEmail"
+    @contextmenu.prevent="handleContextMenu"
   >
     <header class="account-card__head">
       <p class="account-card__email">{{ displayEmail }}</p>

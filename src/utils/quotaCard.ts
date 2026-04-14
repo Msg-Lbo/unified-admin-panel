@@ -191,6 +191,37 @@ function pickCpaWeeklyWindow(
 }
 
 function resolveSub2Quota(raw: Record<string, unknown>): ResolvedQuotaBase {
+  const extra = toRecord(raw.extra);
+  const usageWindow = toRecord(raw.sub2_usage_window ?? raw.usage_window);
+  const usageWindow7d = toRecord(
+    usageWindow?.seven_day ?? usageWindow?.sevenDay ?? usageWindow?.window_7d
+  );
+
+  // 对齐 sub2api 的 7d 进度口径：有 codex 7d 百分比就优先使用。
+  const codex7dCandidates = [
+    extra?.codex_7d_used_percent,
+    extra?.codex_7d_utilization,
+    extra?.seven_day_used_percent,
+    extra?.weekly_used_percent,
+    usageWindow7d?.utilization,
+    usageWindow7d?.used_percent
+  ];
+  for (const candidate of codex7dCandidates) {
+    const value = toOptionalNumber(candidate);
+    if (typeof value !== "number") {
+      continue;
+    }
+    const usedPercent = normalizePercent(normalizePercentageLike(value));
+    return {
+      total: 100,
+      used: usedPercent,
+      totalText: "7d限额 100%",
+      usedText: formatPercent(usedPercent),
+      remainingPercent: normalizePercent(100 - usedPercent),
+      usedPercent
+    };
+  }
+
   const windows = [
     {
       label: "总额度",
@@ -221,20 +252,6 @@ function resolveSub2Quota(raw: Record<string, unknown>): ResolvedQuotaBase {
       used,
       totalText: `${selectedWindow.label} ${formatNumber(total)}`,
       usedText: `${formatNumber(used)} (${formatPercent(usedPercent)})`,
-      remainingPercent: normalizePercent(100 - usedPercent),
-      usedPercent
-    };
-  }
-
-  const extra = toRecord(raw.extra);
-  const weeklyUsedRaw = toOptionalNumber(extra?.codex_7d_used_percent);
-  if (typeof weeklyUsedRaw === "number") {
-    const usedPercent = normalizePercent(normalizePercentageLike(weeklyUsedRaw));
-    return {
-      total: 100,
-      used: usedPercent,
-      totalText: "周限额 100%",
-      usedText: formatPercent(usedPercent),
       remainingPercent: normalizePercent(100 - usedPercent),
       usedPercent
     };
@@ -277,7 +294,7 @@ function resolveCpaQuota(raw: Record<string, unknown>): ResolvedQuotaBase {
     return {
       total: 100,
       used: usedPercent,
-      totalText: "周限额 100%",
+      totalText: "7d限额 100%",
       usedText: formatPercent(usedPercent),
       remainingPercent: normalizePercent(100 - usedPercent),
       usedPercent
@@ -317,6 +334,7 @@ export function buildAccountQuotaMetrics(account: UnifiedAccount): QuotaCardMetr
     remainingUsd >= 0
       ? usedUsd + remainingUsd
       : inferredTotalUsd;
+
   const usdQuotaValue =
     typeof monetaryTotalUsd === "number" && monetaryTotalUsd > 0
       ? monetaryTotalUsd
