@@ -86,6 +86,7 @@ body {
   grid-template-rows: auto auto minmax(0, 1fr) auto;
   gap: 12px;
   padding: 14px 14px calc(18px + env(safe-area-inset-bottom, 0px));
+  overflow: hidden;
 }
 
 .app-toolbar {
@@ -159,7 +160,6 @@ body {
 
 .account-split {
   min-height: 0;
-  height: 100%;
   display: flex;
   gap: 0;
   transition: background-color 0.2s ease;
@@ -319,10 +319,11 @@ body {
 .pane-scroll {
   flex: 1;
   min-height: 0;
+  height: 0;
 }
 
 .card-grid {
-  min-height: 100%;
+  min-height: 0;
   overflow: visible;
   padding: 12px;
   display: grid;
