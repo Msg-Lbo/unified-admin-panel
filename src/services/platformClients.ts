@@ -173,6 +173,7 @@ export interface BatchEditPayload {
 }
 
 const PROXY_ENDPOINT = "/api/proxy";
+const REQUEST_MODE_STORAGE_KEY = "unified-admin-panel.request-mode";
 const CPA_CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 const CPA_CODEX_USER_AGENT =
   "codex_cli_rs/0.76.0 (Debian 13.0.0; x86_64) WindowsTerminal";
@@ -709,40 +710,44 @@ function writeSub2AccountStatsCache(
   });
 }
 
-function getCLIProxyHeaders(platform: PlatformConfig): Record<string, string> {
-  return {
-    Authorization: `Bearer ${platform.apiKey.trim()}`,
-    "X-Management-Key": platform.apiKey.trim()
-  };
-}
-
-function getSub2ApiHeaders(platform: PlatformConfig): Record<string, string> {
-  return {
-    "x-api-key": platform.apiKey.trim(),
-    Authorization: `Bearer ${platform.apiKey.trim()}`
-  };
-}
-
-function ensurePlatformReady(platform: PlatformConfig): {
-  baseUrl: string;
-  apiKey: string;
-} {
-  const baseUrl = sanitizeBaseUrl(platform.baseUrl);
-  if (!baseUrl) {
-    throw new Error("Base URL is required.");
-  }
+function getRequiredApiKey(platform: PlatformConfig): string {
   const apiKey = platform.apiKey.trim();
   if (!apiKey) {
     throw new Error("API key is required.");
   }
-  return { baseUrl, apiKey };
+  return apiKey;
+}
+
+function getCLIProxyHeaders(platform: PlatformConfig): Record<string, string> {
+  const apiKey = getRequiredApiKey(platform);
+  return {
+    Authorization: `Bearer ${apiKey}`,
+    "X-Management-Key": apiKey
+  };
+}
+
+function getSub2ApiHeaders(platform: PlatformConfig): Record<string, string> {
+  const apiKey = getRequiredApiKey(platform);
+  return {
+    "x-api-key": apiKey,
+    Authorization: `Bearer ${apiKey}`
+  };
+}
+
+function ensurePlatformReady(platform: PlatformConfig): string {
+  const baseUrl = sanitizeBaseUrl(platform.baseUrl);
+  if (!baseUrl) {
+    throw new Error("Base URL is required.");
+  }
+  getRequiredApiKey(platform);
+  return baseUrl;
 }
 
 function shouldPreferProxy(): boolean {
   if (typeof window === "undefined") {
     return false;
   }
-  const configured = window.localStorage.getItem("unified-admin-panel.request-mode");
+  const configured = window.localStorage.getItem(REQUEST_MODE_STORAGE_KEY);
   if (configured === "direct") {
     return false;
   }
@@ -802,7 +807,7 @@ async function fetchCLIProxyCodexUsage(
   authIndex: string,
   accountId: string
 ): Promise<Record<string, unknown> | undefined> {
-  const { baseUrl } = ensurePlatformReady(platform);
+  const baseUrl = ensurePlatformReady(platform);
   const response = await requestWithFallback<CLIProxyApiCallResponse>({
     method: "POST",
     url: `${baseUrl}/v0/management/api-call`,
@@ -1089,7 +1094,7 @@ function buildCLIProxyUsageCostByAuthIndex(
 async function fetchCLIProxyUsageCostByAuthIndex(
   platform: PlatformConfig
 ): Promise<Map<string, CLIProxyUsageCostEstimate>> {
-  const { baseUrl } = ensurePlatformReady(platform);
+  const baseUrl = ensurePlatformReady(platform);
   const data = await requestWithFallback<CLIProxyUsageResponse>({
     method: "GET",
     url: `${baseUrl}/v0/management/usage`,
@@ -1180,7 +1185,7 @@ export function sanitizeBaseUrl(baseUrl: string): string {
 async function fetchCLIProxyAccounts(
   platform: PlatformConfig
 ): Promise<UnifiedAccount[]> {
-  const { baseUrl } = ensurePlatformReady(platform);
+  const baseUrl = ensurePlatformReady(platform);
   const data = await requestWithFallback<CLIProxyListResponse>({
     method: "GET",
     url: `${baseUrl}/v0/management/auth-files`,
@@ -1219,7 +1224,7 @@ async function fetchSub2ApiAccountStats(
     return cached;
   }
 
-  const { baseUrl } = ensurePlatformReady(platform);
+  const baseUrl = ensurePlatformReady(platform);
   const envelope = await requestWithFallback<Sub2ApiEnvelope<Record<string, unknown>>>({
     method: "GET",
     url: `${baseUrl}/api/v1/admin/accounts/${accountId}/stats`,
@@ -1293,7 +1298,7 @@ async function buildSub2ApiStatsByAccountId(
 async function fetchSub2ApiAccounts(
   platform: PlatformConfig
 ): Promise<UnifiedAccount[]> {
-  const { baseUrl } = ensurePlatformReady(platform);
+  const baseUrl = ensurePlatformReady(platform);
   const data = await requestWithFallback<Sub2ApiEnvelope<Sub2ApiPaginated<Sub2ApiAccount>>>(
     {
       method: "GET",
@@ -1325,7 +1330,7 @@ async function fetchSub2ApiAccounts(
 async function fetchCLIProxyTrend(
   platform: PlatformConfig
 ): Promise<Record<string, number>> {
-  const { baseUrl } = ensurePlatformReady(platform);
+  const baseUrl = ensurePlatformReady(platform);
   const data = await requestWithFallback<CLIProxyUsageResponse>({
     method: "GET",
     url: `${baseUrl}/v0/management/usage`,
@@ -1346,7 +1351,7 @@ async function fetchSub2ApiTrend(
   platform: PlatformConfig,
   days: number
 ): Promise<Record<string, number>> {
-  const { baseUrl } = ensurePlatformReady(platform);
+  const baseUrl = ensurePlatformReady(platform);
   const dateKeys = buildDateKeys(days);
   const startDate = dateKeys[0];
   const endDate = dateKeys[dateKeys.length - 1];
@@ -1495,7 +1500,7 @@ export async function fetchAccountDetail(
   account: UnifiedAccount
 ): Promise<AccountDetailResult> {
   if (account.platform === "cliproxyapi") {
-    const { baseUrl } = ensurePlatformReady(platform);
+    const baseUrl = ensurePlatformReady(platform);
     const [modelsData, usageData] = await Promise.all([
       requestWithFallback<CLIProxyModelsResponse>({
         method: "GET",
@@ -1521,7 +1526,7 @@ export async function fetchAccountDetail(
     };
   }
 
-  const { baseUrl } = ensurePlatformReady(platform);
+  const baseUrl = ensurePlatformReady(platform);
   const accountId = ensureNumericAccountId(account);
 
   const [profileResponse, statsResponse] = await Promise.all([
@@ -1553,7 +1558,7 @@ export async function setAccountEnabled(
   account: UnifiedAccount,
   enabled: boolean
 ): Promise<void> {
-  const { baseUrl } = ensurePlatformReady(platform);
+  const baseUrl = ensurePlatformReady(platform);
   if (account.platform === "cliproxyapi") {
     await requestWithFallback({
       method: "PATCH",
@@ -1586,7 +1591,7 @@ export async function batchSetAccountsEnabled(
   if (!accounts.length) {
     return;
   }
-  const { baseUrl } = ensurePlatformReady(platform);
+  const baseUrl = ensurePlatformReady(platform);
   if (accounts[0].platform === "cliproxyapi") {
     await Promise.all(
       accounts.map((account) =>
@@ -1626,7 +1631,7 @@ export async function updateAccountEditableFields(
   account: UnifiedAccount,
   payload: EditAccountPayload
 ): Promise<void> {
-  const { baseUrl } = ensurePlatformReady(platform);
+  const baseUrl = ensurePlatformReady(platform);
   if (account.platform === "cliproxyapi") {
     const body: Record<string, unknown> = {
       name: account.manageKey
@@ -1675,7 +1680,7 @@ export async function batchUpdateAccountFields(
   if (!accounts.length) {
     return;
   }
-  const { baseUrl } = ensurePlatformReady(platform);
+  const baseUrl = ensurePlatformReady(platform);
   if (accounts[0].platform === "cliproxyapi") {
     await Promise.all(
       accounts.map((account) => {

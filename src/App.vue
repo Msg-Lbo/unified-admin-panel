@@ -44,6 +44,9 @@ const LOGIN_TOKEN_ENV = String(import.meta.env.VITE_LOGIN_TOKEN ?? "").trim();
 
 type FeedbackType = "success" | "warning" | "error";
 type AccountStateKind = "normal" | "exhausted" | "disabled" | "error";
+const PLATFORM_KINDS: PlatformKind[] = ["sub2api", "cliproxyapi"];
+const AUTO_REFRESH_ALLOWED_SECONDS = [0, 15, 30, 60] as const;
+const DEFAULT_AUTO_REFRESH_SECONDS = 30;
 
 const autoRefreshOptions = [
   { label: "自动刷新：关闭", value: 0 },
@@ -160,7 +163,7 @@ function loadSortSettings(): PlatformSortSettings {
     }
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     const defaults = cloneDefaultSortSettings();
-    for (const platformId of ["sub2api", "cliproxyapi"] as PlatformKind[]) {
+    for (const platformId of PLATFORM_KINDS) {
       const rule = parsed[platformId];
       if (!rule || typeof rule !== "object") {
         continue;
@@ -186,11 +189,14 @@ function loadThemeMode(): "light" | "dark" {
 function loadAutoRefreshSeconds(): number {
   const raw = localStorage.getItem(AUTO_REFRESH_STORAGE_KEY);
   if (!raw) {
-    return 30;
+    return DEFAULT_AUTO_REFRESH_SECONDS;
   }
   const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || ![0, 15, 30, 60].includes(parsed)) {
-    return 30;
+  if (
+    !Number.isFinite(parsed) ||
+    !AUTO_REFRESH_ALLOWED_SECONDS.includes(parsed as (typeof AUTO_REFRESH_ALLOWED_SECONDS)[number])
+  ) {
+    return DEFAULT_AUTO_REFRESH_SECONDS;
   }
   return parsed;
 }
@@ -389,6 +395,19 @@ function sortAccountsByDefault(list: UnifiedAccount[]): UnifiedAccount[] {
   );
 }
 
+function groupAccountsByPlatform(
+  list: UnifiedAccount[]
+): Map<PlatformKind, UnifiedAccount[]> {
+  const grouped = new Map<PlatformKind, UnifiedAccount[]>();
+  for (const account of list) {
+    if (!grouped.has(account.platform)) {
+      grouped.set(account.platform, []);
+    }
+    grouped.get(account.platform)?.push(account);
+  }
+  return grouped;
+}
+
 function mergeAccountsWithFallback(
   nextAccounts: UnifiedAccount[],
   errorMessages: string[]
@@ -398,25 +417,11 @@ function mergeAccountsWithFallback(
     return nextAccounts;
   }
 
-  const previousByPlatform = new Map<PlatformKind, UnifiedAccount[]>();
-  const nextByPlatform = new Map<PlatformKind, UnifiedAccount[]>();
-
-  for (const account of accounts.value) {
-    if (!previousByPlatform.has(account.platform)) {
-      previousByPlatform.set(account.platform, []);
-    }
-    previousByPlatform.get(account.platform)?.push(account);
-  }
-
-  for (const account of nextAccounts) {
-    if (!nextByPlatform.has(account.platform)) {
-      nextByPlatform.set(account.platform, []);
-    }
-    nextByPlatform.get(account.platform)?.push(account);
-  }
+  const previousByPlatform = groupAccountsByPlatform(accounts.value);
+  const nextByPlatform = groupAccountsByPlatform(nextAccounts);
 
   const merged: UnifiedAccount[] = [];
-  for (const platformId of ["sub2api", "cliproxyapi"] as PlatformKind[]) {
+  for (const platformId of PLATFORM_KINDS) {
     const nextList = nextByPlatform.get(platformId) ?? [];
     if (nextList.length > 0) {
       merged.push(...nextList);
