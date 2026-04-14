@@ -629,6 +629,13 @@ function normalizePriority(value: unknown): number | undefined {
 function parseError(error: unknown): string {
   if (axios.isAxiosError(error)) {
     const responseData = error.response?.data;
+    if (typeof responseData === "string" && responseData.trim()) {
+      const normalized = responseData.trim();
+      if (normalized.includes("error code: 1003")) {
+        return "Cloudflare 拒绝通过 IP 访问上游（1003），请将平台地址改为域名。";
+      }
+      return normalized;
+    }
     if (responseData && typeof responseData === "object") {
       const payload = responseData as Record<string, unknown>;
       const payloadError =
