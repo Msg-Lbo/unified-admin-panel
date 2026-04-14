@@ -9,6 +9,7 @@ import {
   NConfigProvider,
   NDropdown,
   NIcon,
+  NInput,
   NScrollbar,
   NSelect,
   NSpace,
@@ -37,6 +38,9 @@ const SORT_STORAGE_KEY = "unified-admin-panel.sort-settings";
 const THEME_STORAGE_KEY = "unified-admin-panel.theme";
 const AUTO_REFRESH_STORAGE_KEY = "unified-admin-panel.auto-refresh-seconds";
 const SPLIT_RATIO_STORAGE_KEY = "unified-admin-panel.split-ratio";
+const AUTH_SESSION_KEY = "unified-admin-panel.auth-session";
+const LOGIN_PASSWORD_ENV = String(import.meta.env.VITE_LOGIN_PASSWORD ?? "").trim();
+const LOGIN_TOKEN_ENV = String(import.meta.env.VITE_LOGIN_TOKEN ?? "").trim();
 
 type FeedbackType = "success" | "warning" | "error";
 type AccountStateKind = "normal" | "exhausted" | "disabled" | "error";
@@ -214,12 +218,36 @@ function applyThemeToDocument(themeMode: "light" | "dark"): void {
   document.documentElement.setAttribute("data-theme", themeMode);
 }
 
+function loadAuthSession(): boolean {
+  try {
+    return sessionStorage.getItem(AUTH_SESSION_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function persistAuthSession(authorized: boolean): void {
+  try {
+    if (authorized) {
+      sessionStorage.setItem(AUTH_SESSION_KEY, "1");
+      return;
+    }
+    sessionStorage.removeItem(AUTH_SESSION_KEY);
+  } catch {
+    // no-op: storage may be unavailable in private contexts
+  }
+}
+
 const platforms = ref<PlatformConfig[]>(loadPlatforms());
 const sortSettings = ref<PlatformSortSettings>(loadSortSettings());
 const themeMode = ref<"light" | "dark">(loadThemeMode());
 const autoRefreshSeconds = ref<number>(loadAutoRefreshSeconds());
 const splitRatio = ref<number>(loadSplitRatio());
 const currentYear = new Date().getFullYear();
+const isAuthenticated = ref(loadAuthSession());
+const loginPassword = ref("");
+const loginToken = ref("");
+const loginError = ref("");
 
 const loading = ref(false);
 const refreshing = ref(false);
@@ -597,6 +625,46 @@ function toggleTheme(): void {
   themeMode.value = themeMode.value === "dark" ? "light" : "dark";
   localStorage.setItem(THEME_STORAGE_KEY, themeMode.value);
   applyThemeToDocument(themeMode.value);
+}
+
+function isLoginCredentialValid(password: string, token: string): boolean {
+  const normalizedPassword = password.trim();
+  const normalizedToken = token.trim();
+  const requiresExactMatch = Boolean(LOGIN_PASSWORD_ENV || LOGIN_TOKEN_ENV);
+
+  if (requiresExactMatch) {
+    const passwordMatched =
+      Boolean(LOGIN_PASSWORD_ENV) && normalizedPassword === LOGIN_PASSWORD_ENV;
+    const tokenMatched = Boolean(LOGIN_TOKEN_ENV) && normalizedToken === LOGIN_TOKEN_ENV;
+    return passwordMatched || tokenMatched;
+  }
+
+  return Boolean(normalizedPassword || normalizedToken);
+}
+
+function handleLogin(): void {
+  if (!isLoginCredentialValid(loginPassword.value, loginToken.value)) {
+    loginError.value =
+      LOGIN_PASSWORD_ENV || LOGIN_TOKEN_ENV
+        ? "密码或 Token 错误，请重试。"
+        : "请输入密码或 Token。";
+    return;
+  }
+
+  loginError.value = "";
+  isAuthenticated.value = true;
+  persistAuthSession(true);
+  notify("success", "登录成功。");
+}
+
+function logout(): void {
+  closeContextMenu();
+  showConfigModal.value = false;
+  isAuthenticated.value = false;
+  loginPassword.value = "";
+  loginToken.value = "";
+  loginError.value = "";
+  persistAuthSession(false);
 }
 
 const quotaMetricsMap = computed<Map<string, QuotaCardMetrics>>(() => {
@@ -1020,6 +1088,9 @@ function resetAutoRefreshTimer(): void {
     clearInterval(autoRefreshTimer);
     autoRefreshTimer = null;
   }
+  if (!isAuthenticated.value) {
+    return;
+  }
   if (autoRefreshSeconds.value <= 0) {
     return;
   }
@@ -1041,10 +1112,24 @@ watch(splitRatio, (value) => {
   localStorage.setItem(SPLIT_RATIO_STORAGE_KEY, String(value));
 });
 
+watch(isAuthenticated, (value) => {
+  if (value) {
+    void refreshAccounts();
+    resetAutoRefreshTimer();
+    return;
+  }
+  if (autoRefreshTimer) {
+    clearInterval(autoRefreshTimer);
+    autoRefreshTimer = null;
+  }
+});
+
 onMounted(() => {
   applyThemeToDocument(themeMode.value);
-  void refreshAccounts();
-  resetAutoRefreshTimer();
+  if (isAuthenticated.value) {
+    void refreshAccounts();
+    resetAutoRefreshTimer();
+  }
 });
 
 onBeforeUnmount(() => {
@@ -1070,7 +1155,7 @@ onBeforeUnmount(() => {
     :locale="zhCN"
     :date-locale="dateZhCN"
   >
-    <div class="app-shell">
+    <div v-if="isAuthenticated" class="app-shell">
       <header class="app-toolbar">
         <div class="app-toolbar__title">
           <h1>账号额度面板</h1>
@@ -1089,6 +1174,7 @@ onBeforeUnmount(() => {
           <NButton tertiary @click="toggleTheme">
             {{ isDark ? "切换浅色" : "切换深色" }}
           </NButton>
+          <NButton tertiary @click="logout">退出登录</NButton>
         </NSpace>
       </header>
 
@@ -1242,6 +1328,26 @@ onBeforeUnmount(() => {
         @save-settings="saveSettings"
         @test-platform="testConnection"
       />
+    </div>
+    <div v-else class="auth-page">
+      <section class="auth-card">
+        <h1>统一管理面板登录</h1>
+        <p class="auth-card__subtitle">请输入密码或 Token，任一项正确后即可进入。</p>
+        <NInput
+          v-model:value="loginPassword"
+          type="password"
+          placeholder="密码（可选）"
+          show-password-on="mousedown"
+          @keydown.enter.prevent="handleLogin"
+        />
+        <NInput
+          v-model:value="loginToken"
+          placeholder="Token（可选）"
+          @keydown.enter.prevent="handleLogin"
+        />
+        <p v-if="loginError" class="auth-card__error">{{ loginError }}</p>
+        <NButton type="primary" block @click="handleLogin">登录进入</NButton>
+      </section>
     </div>
   </NConfigProvider>
 </template>

@@ -37,6 +37,47 @@ body {
   overflow: hidden;
 }
 
+.auth-page {
+  min-height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+}
+
+.auth-card {
+  width: min(420px, 100%);
+  display: grid;
+  gap: 12px;
+  padding: 20px;
+  border-radius: 16px;
+  border: 1px solid var(--panel-border);
+  background: var(--panel-bg);
+  backdrop-filter: blur(12px);
+  box-shadow: var(--shadow-main);
+}
+
+.auth-card h1 {
+  margin: 0;
+  font-size: clamp(1.06rem, 2.3vw, 1.32rem);
+}
+
+.auth-card__subtitle {
+  margin: 0;
+  color: var(--text-subtle);
+  font-size: 0.9rem;
+}
+
+.auth-card__error {
+  margin: 0;
+  border-radius: 10px;
+  padding: 8px 10px;
+  border: 1px solid rgba(239, 68, 68, 0.28);
+  background: rgba(239, 68, 68, 0.12);
+  color: #ef4444;
+  font-size: 0.86rem;
+}
+
 .app-shell {
   position: relative;
   height: 100%;
