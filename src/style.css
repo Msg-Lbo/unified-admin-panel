@@ -354,7 +354,7 @@ body {
   padding: 10px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   box-shadow: 0 12px 28px rgba(2, 6, 23, 0.25);
   transition:
     background var(--account-card-bg-transition-duration) ease,
@@ -467,7 +467,7 @@ body {
 
 .account-card__quota {
   display: grid;
-  gap: 5px;
+  gap: 0;
 }
 
 .account-card__quota-row {

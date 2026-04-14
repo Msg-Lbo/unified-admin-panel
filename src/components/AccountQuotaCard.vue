@@ -161,6 +161,27 @@ const resolvedRemainingPercent = computed(() =>
   Math.max(0, Math.min(100, 100 - resolvedUsedPercent.value))
 );
 
+function extractUsdAmount(text: string): string | undefined {
+  const matched = text.match(/\$\d+(?:,\d{3})*(?:\.\d+)?/);
+  return matched?.[0];
+}
+
+const usedQuotaDisplayText = computed(() => {
+  const usedText = props.metrics.usedText?.trim() || "-";
+  if (usedText === "-" || usedText.includes("/")) {
+    return usedText;
+  }
+
+  const totalUsd = extractUsdAmount(props.metrics.totalText ?? "");
+  if (!totalUsd) {
+    return usedText;
+  }
+  if (usedText.includes(totalUsd)) {
+    return usedText;
+  }
+  return `${usedText} / ${totalUsd}`;
+});
+
 const metricSignature = computed(
   () =>
     `${props.metrics.totalText}|${props.metrics.usedText}|${props.metrics.remainingPercent ?? ""}|${props.metrics.usedPercent ?? ""}|${props.metrics.exhausted ? "1" : "0"}`
@@ -271,12 +292,8 @@ function handleContextMenu(event: MouseEvent): void {
 
     <div class="account-card__quota">
       <div class="account-card__quota-row">
-        <span>总额度</span>
-        <strong>{{ metrics.totalText }}</strong>
-      </div>
-      <div class="account-card__quota-row">
         <span>已使用</span>
-        <strong>{{ metrics.usedText }}</strong>
+        <strong>{{ usedQuotaDisplayText }}</strong>
       </div>
     </div>
   </article>
