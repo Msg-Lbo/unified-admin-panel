@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import type { UnifiedAccount } from "../types/platform";
 import type { QuotaCardMetrics } from "../utils/quotaCard";
@@ -37,6 +37,13 @@ function normalizeStatusLabel(status: string): string {
     normalized.includes("rate limit")
   ) {
     return "额度用尽";
+  }
+  if (
+    normalized.includes("banned") ||
+    normalized.includes("deactivated") ||
+    normalized.includes("account_deactivated")
+  ) {
+    return "封禁";
   }
   if (normalized === "active") {
     return "正常";
@@ -148,7 +155,7 @@ const statusTone = computed<"ok" | "warn" | "error">(() => {
 
 const statusLabel = computed(() => {
   if (props.metrics.exhausted) {
-    return "额度用尽";
+    return "棰濆害鐢ㄥ敖";
   }
   return normalizeStatusLabel(props.account.status);
 });
@@ -305,11 +312,9 @@ function handleContextMenu(event: MouseEvent): void {
           {{ planType }}
         </span>
         <span v-if="markHighest" class="account-card__mark account-card__mark--highest">
-          最高
-        </span>
+          鏈€楂?        </span>
         <span v-if="markLowest" class="account-card__mark account-card__mark--lowest">
-          最低
-        </span>
+          鏈€浣?        </span>
       </div>
     </header>
 
@@ -321,3 +326,4 @@ function handleContextMenu(event: MouseEvent): void {
     </div>
   </article>
 </template>
+

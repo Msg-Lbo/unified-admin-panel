@@ -1,4 +1,4 @@
-import axios, { type AxiosRequestConfig, type Method } from "axios";
+﻿import axios, { type AxiosRequestConfig, type Method } from "axios";
 import type {
   AccountDetailResult,
   PlatformConfig,
@@ -157,6 +157,7 @@ interface CLIProxyUsageCostEstimate {
 
 const SUB2_ACCOUNT_STATS_CACHE_TTL_MS = 90_000;
 const SUB2_ACCOUNT_USAGE_WINDOW_CACHE_TTL_MS = 45_000;
+const CPA_USAGE_COST_WINDOW_DAYS = 7;
 const sub2AccountStatsCache = new Map<
   string,
   { expiresAt: number; payload: Record<string, unknown> }
@@ -199,8 +200,8 @@ const SUB2API_QUOTA_HINTS = [
   "billing hard limit",
   "credit balance is too low",
   "out of credits",
-  "额度",
-  "用完"
+  "棰濆害",
+  "鐢ㄥ畬"
 ];
 
 const SUB2API_RATE_LIMIT_HINTS = [
@@ -210,6 +211,15 @@ const SUB2API_RATE_LIMIT_HINTS = [
   "429",
   "too many requests",
   "retry after"
+];
+
+const SUB2API_BANNED_HINTS = [
+  "account_deactivated",
+  "deactivated",
+  "account disabled",
+  "suspended",
+  "banned",
+  "forbidden"
 ];
 
 function pickFirstString(
@@ -536,6 +546,18 @@ function normalizeSub2ApiStatus(
     .join(" ")
     .toLowerCase();
   const signalText = `${normalizedStatus} ${messageText}`;
+  const statusIsBanned =
+    normalizedStatus.includes("banned") ||
+    normalizedStatus.includes("deactivated") ||
+    normalizedStatus.includes("suspended");
+  const bannedByMessage = containsAnyKeyword(signalText, SUB2API_BANNED_HINTS);
+
+  if (statusIsBanned || (normalizedStatus === "error" && bannedByMessage)) {
+    return {
+      status: "banned",
+      statusDetail
+    };
+  }
 
   const tempUnschedulableActive = isFutureTime(tempUnschedulableUntil);
   const overloadActive = isFutureTime(overloadUntil);
@@ -1073,10 +1095,132 @@ function createEmptyCLIProxyUsageCostEstimate(): CLIProxyUsageCostEstimate {
   };
 }
 
+function toOptionalNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return undefined;
+}
+
+function pickFirstNonNegativeNumber(values: unknown[]): number | undefined {
+  for (const value of values) {
+    const numeric = toOptionalNumber(value);
+    if (typeof numeric === "number" && numeric >= 0) {
+      return numeric;
+    }
+  }
+  return undefined;
+}
+
+function toUsageDateKey(timestamp: unknown): string | undefined {
+  if (typeof timestamp !== "string") {
+    return undefined;
+  }
+  const key = timestamp.trim().slice(0, 10);
+  if (isDateKey(key)) {
+    return key;
+  }
+  return undefined;
+}
+
+function extractCLIProxyDetailUsedUsd(detail: CLIProxyUsageDetail): number | undefined {
+  const raw = detail as unknown as Record<string, unknown>;
+  const billing = toRecord(raw.billing);
+  const metrics = toRecord(raw.metrics);
+  const usage = toRecord(raw.usage);
+  return pickFirstNonNegativeNumber([
+    raw.actual_cost,
+    raw.actualCost,
+    raw.total_actual_cost,
+    raw.totalActualCost,
+    raw.user_cost,
+    raw.userCost,
+    raw.total_user_cost,
+    raw.totalUserCost,
+    raw.cost,
+    raw.total_cost,
+    raw.totalCost,
+    raw.used_usd,
+    raw.usedUsd,
+    raw.usd_cost,
+    raw.usdCost,
+    billing?.actual_cost,
+    billing?.actualCost,
+    billing?.user_cost,
+    billing?.userCost,
+    billing?.cost,
+    billing?.total_cost,
+    billing?.totalCost,
+    billing?.used_usd,
+    billing?.usedUsd,
+    metrics?.actual_cost,
+    metrics?.actualCost,
+    metrics?.cost,
+    metrics?.total_cost,
+    metrics?.totalCost,
+    metrics?.used_usd,
+    metrics?.usedUsd,
+    usage?.actual_cost,
+    usage?.actualCost,
+    usage?.cost,
+    usage?.total_cost,
+    usage?.totalCost,
+    usage?.used_usd,
+    usage?.usedUsd
+  ]);
+}
+
+function accumulateCLIProxyUsageCost(
+  target: Map<string, CLIProxyUsageCostEstimate>,
+  authIndex: string,
+  modelName: string,
+  detail: CLIProxyUsageDetail
+): void {
+  const tokens = detail.tokens;
+  const inputTokens = numberFromUnknown(tokens?.input_tokens);
+  const outputTokens = numberFromUnknown(tokens?.output_tokens);
+  const cacheReadTokens = numberFromUnknown(tokens?.cache_read_tokens ?? tokens?.cached_tokens);
+  const cacheCreationTokens = numberFromUnknown(tokens?.cache_creation_tokens);
+  const totalTokensRaw = numberFromUnknown(tokens?.total_tokens);
+  const totalTokens =
+    totalTokensRaw > 0
+      ? totalTokensRaw
+      : inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens;
+
+  const directCost = extractCLIProxyDetailUsedUsd(detail);
+  const estimatedCostByTokens =
+    estimateTokenUsageCostUsd({
+      model: modelName,
+      inputTokens,
+      outputTokens,
+      cacheReadTokens,
+      cacheCreationTokens
+    }) ?? 0;
+  const resolvedCost = typeof directCost === "number" ? directCost : estimatedCostByTokens;
+
+  const aggregate = target.get(authIndex) ?? createEmptyCLIProxyUsageCostEstimate();
+  aggregate.estimated_used_usd += resolvedCost;
+  aggregate.total_tokens += totalTokens;
+  aggregate.input_tokens += inputTokens;
+  aggregate.output_tokens += outputTokens;
+  aggregate.cache_read_tokens += cacheReadTokens;
+  aggregate.cache_creation_tokens += cacheCreationTokens;
+  aggregate.requests += 1;
+  target.set(authIndex, aggregate);
+}
+
 function buildCLIProxyUsageCostByAuthIndex(
   usage: CLIProxyUsageSnapshot | undefined
 ): Map<string, CLIProxyUsageCostEstimate> {
   const result = new Map<string, CLIProxyUsageCostEstimate>();
+  const undatedFallback = new Map<string, CLIProxyUsageCostEstimate>();
+  const recentDateKeys = new Set(buildDateKeys(CPA_USAGE_COST_WINDOW_DAYS));
   const apiSnapshots = usage?.apis ?? {};
   for (const apiSnapshot of Object.values(apiSnapshots)) {
     const modelSnapshots = apiSnapshot?.models ?? {};
@@ -1090,41 +1234,25 @@ function buildCLIProxyUsageCostByAuthIndex(
         if (!authIndex) {
           continue;
         }
-
-        const tokens = detail.tokens;
-        const inputTokens = numberFromUnknown(tokens?.input_tokens);
-        const outputTokens = numberFromUnknown(tokens?.output_tokens);
-        const cacheReadTokens = numberFromUnknown(
-          tokens?.cache_read_tokens ?? tokens?.cached_tokens
-        );
-        const cacheCreationTokens = numberFromUnknown(tokens?.cache_creation_tokens);
-        const totalTokensRaw = numberFromUnknown(tokens?.total_tokens);
-        const totalTokens =
-          totalTokensRaw > 0
-            ? totalTokensRaw
-            : inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens;
-        const estimatedCost =
-          estimateTokenUsageCostUsd({
-            model: modelName,
-            inputTokens,
-            outputTokens,
-            cacheReadTokens,
-            cacheCreationTokens
-          }) ?? 0;
-
-        const aggregate =
-          result.get(authIndex) ?? createEmptyCLIProxyUsageCostEstimate();
-        aggregate.estimated_used_usd += estimatedCost;
-        aggregate.total_tokens += totalTokens;
-        aggregate.input_tokens += inputTokens;
-        aggregate.output_tokens += outputTokens;
-        aggregate.cache_read_tokens += cacheReadTokens;
-        aggregate.cache_creation_tokens += cacheCreationTokens;
-        aggregate.requests += 1;
-        result.set(authIndex, aggregate);
+        const dateKey = toUsageDateKey(detail.timestamp);
+        if (dateKey) {
+          if (!recentDateKeys.has(dateKey)) {
+            continue;
+          }
+          accumulateCLIProxyUsageCost(result, authIndex, modelName, detail);
+          continue;
+        }
+        accumulateCLIProxyUsageCost(undatedFallback, authIndex, modelName, detail);
       }
     }
   }
+
+  for (const [authIndex, fallbackValue] of undatedFallback.entries()) {
+    if (!result.has(authIndex)) {
+      result.set(authIndex, fallbackValue);
+    }
+  }
+
   return result;
 }
 
@@ -1539,7 +1667,7 @@ export async function fetchPlatformUsageTrend(
             }
           })
           .catch((error) => {
-            errors.push(`${platform.name} 趋势获取失败：${parseError(error)}`);
+            errors.push(`${platform.name} 瓒嬪娍鑾峰彇澶辫触锛?{parseError(error)}`);
           })
       );
       continue;
@@ -1552,7 +1680,7 @@ export async function fetchPlatformUsageTrend(
           }
         })
         .catch((error) => {
-          errors.push(`${platform.name} 趋势获取失败：${parseError(error)}`);
+          errors.push(`${platform.name} 瓒嬪娍鑾峰彇澶辫触锛?{parseError(error)}`);
         })
     );
   }
@@ -1848,3 +1976,4 @@ export async function batchUpdateAccountFields(
     headers: getSub2ApiHeaders(platform)
   });
 }
+

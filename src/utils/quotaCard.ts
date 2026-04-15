@@ -1,4 +1,4 @@
-import type { UnifiedAccount } from "../types/platform";
+﻿import type { UnifiedAccount } from "../types/platform";
 
 export interface QuotaCardMetrics {
   totalText: string;
@@ -99,6 +99,43 @@ function toDateKey(value: unknown): string | undefined {
   return undefined;
 }
 
+function toOptionalTimestamp(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    if (value > 1e12) {
+      return value;
+    }
+    if (value > 1e9) {
+      return value * 1000;
+    }
+    return undefined;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) {
+      if (numeric > 1e12) {
+        return numeric;
+      }
+      if (numeric > 1e9) {
+        return numeric * 1000;
+      }
+    }
+  }
+  return undefined;
+}
+
+function isExpiredResetAt(value: unknown): boolean {
+  const timestamp = toOptionalTimestamp(value);
+  if (typeof timestamp !== "number") {
+    return false;
+  }
+  // Leave a small grace period around the exact reset edge.
+  return timestamp <= Date.now() - 30_000;
+}
+
 function sumRecentHistoryUsedUsd(
   stats: Record<string, unknown> | undefined,
   recentDays: number
@@ -164,7 +201,12 @@ function sumRecentHistoryUsedUsd(
 }
 
 function resolveUsedUsd(raw: Record<string, unknown>): number | undefined {
-  // For CPA payloads, direct top-level cost fields are usually the most accurate.
+  const cpaEstimate = toRecord(raw.cpa_usage_cost_estimate);
+  const fromEstimate = toOptionalNumber(cpaEstimate?.estimated_used_usd);
+  if (typeof fromEstimate === "number" && fromEstimate >= 0) {
+    return fromEstimate;
+  }
+
   const direct = toOptionalNumber(
     raw.actual_cost ?? raw.total_actual_cost ?? raw.total_cost ?? raw.cost
   );
@@ -179,12 +221,6 @@ function resolveUsedUsd(raw: Record<string, unknown>): number | undefined {
   );
   if (typeof fromSummary === "number" && fromSummary >= 0) {
     return fromSummary;
-  }
-
-  const cpaEstimate = toRecord(raw.cpa_usage_cost_estimate);
-  const fromEstimate = toOptionalNumber(cpaEstimate?.estimated_used_usd);
-  if (typeof fromEstimate === "number" && fromEstimate >= 0) {
-    return fromEstimate;
   }
 
   return undefined;
@@ -371,19 +407,34 @@ function resolveSub2Quota(raw: Record<string, unknown>): ResolvedQuotaBase {
   const usageWindow7d = toRecord(
     usageWindow?.seven_day ?? usageWindow?.sevenDay ?? usageWindow?.window_7d
   );
+  const extraSevenDayResetAt =
+    extra?.codex_7d_reset_at ??
+    extra?.codex_primary_reset_at ??
+    extra?.seven_day_reset_at ??
+    extra?.weekly_reset_at;
+  const usageWindow7dResetAt =
+    usageWindow7d?.resets_at ??
+    usageWindow7d?.resetsAt ??
+    usageWindow7d?.reset_at ??
+    usageWindow7d?.resetAt;
 
-  // 对齐 sub2api 的 7d 进度口径：有 codex 7d 百分比就优先使用。
-  const codex7dCandidates = [
-    extra?.codex_7d_used_percent,
-    extra?.codex_7d_utilization,
-    extra?.seven_day_used_percent,
-    extra?.weekly_used_percent,
-    usageWindow7d?.utilization,
-    usageWindow7d?.used_percent
+  // Prefer codex/sub2api 7d progress, but ignore stale values after reset_at has passed.
+  const codex7dCandidates: Array<{ value: unknown; resetAt?: unknown }> = [
+    { value: extra?.codex_7d_used_percent, resetAt: extraSevenDayResetAt },
+    { value: extra?.codex_7d_utilization, resetAt: extraSevenDayResetAt },
+    { value: extra?.seven_day_used_percent, resetAt: extraSevenDayResetAt },
+    { value: extra?.weekly_used_percent, resetAt: extraSevenDayResetAt },
+    { value: usageWindow7d?.utilization, resetAt: usageWindow7dResetAt },
+    { value: usageWindow7d?.used_percent, resetAt: usageWindow7dResetAt }
   ];
+  let hasExpiredPercentCandidate = false;
   for (const candidate of codex7dCandidates) {
-    const value = toOptionalNumber(candidate);
+    const value = toOptionalNumber(candidate.value);
     if (typeof value !== "number") {
+      continue;
+    }
+    if (isExpiredResetAt(candidate.resetAt)) {
+      hasExpiredPercentCandidate = true;
       continue;
     }
     const usedPercent = normalizePercent(normalizePercentageLike(value));
@@ -394,6 +445,16 @@ function resolveSub2Quota(raw: Record<string, unknown>): ResolvedQuotaBase {
       usedText: formatPercent(usedPercent),
       remainingPercent: normalizePercent(100 - usedPercent),
       usedPercent
+    };
+  }
+  if (hasExpiredPercentCandidate) {
+    return {
+      total: 100,
+      used: 0,
+      totalText: "7d限额 100%",
+      usedText: formatPercent(0),
+      remainingPercent: 100,
+      usedPercent: 0
     };
   }
 
@@ -437,7 +498,6 @@ function resolveSub2Quota(raw: Record<string, unknown>): ResolvedQuotaBase {
     usedText: "-"
   };
 }
-
 function resolveCpaQuota(raw: Record<string, unknown>): ResolvedQuotaBase {
   const usagePayload = toRecord(raw.cpa_quota_usage);
   const rateLimit = toRecord(usagePayload?.rate_limit ?? usagePayload?.rateLimit);
@@ -469,7 +529,7 @@ function resolveCpaQuota(raw: Record<string, unknown>): ResolvedQuotaBase {
     return {
       total: 100,
       used: usedPercent,
-      totalText: "7d限额 100%",
+      totalText: "7d闄愰 100%",
       usedText: formatPercent(usedPercent),
       remainingPercent: normalizePercent(100 - usedPercent),
       usedPercent
@@ -534,7 +594,7 @@ export function buildAccountQuotaMetrics(account: UnifiedAccount): QuotaCardMetr
     inferredTotalUsd > 0
   ) {
     totalValue = inferredTotalUsd;
-    totalText = `估算 ${formatUsd(inferredTotalUsd)}`;
+    totalText = `浼扮畻 ${formatUsd(inferredTotalUsd)}`;
   }
 
   if (typeof usedUsdValue === "number") {
@@ -545,7 +605,7 @@ export function buildAccountQuotaMetrics(account: UnifiedAccount): QuotaCardMetr
   if (
     typeof remainingUsd === "number" &&
     totalText !== "-" &&
-    !totalText.includes("估算") &&
+    !totalText.includes("浼扮畻") &&
     typeof usedUsdValue !== "number"
   ) {
     totalText = `${totalText} / ${formatUsd(remainingUsd + (usedUsdValue ?? 0))}`;
@@ -567,3 +627,4 @@ export function buildAccountQuotaMetrics(account: UnifiedAccount): QuotaCardMetr
     exhausted
   };
 }
+
