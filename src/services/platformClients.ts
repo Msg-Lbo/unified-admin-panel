@@ -155,10 +155,6 @@ interface CLIProxyUsageCostEstimate {
   requests: number;
 }
 
-interface PlatformFetchOptions {
-  includeHeavyMetrics?: boolean;
-}
-
 const SUB2_ACCOUNT_STATS_CACHE_TTL_MS = 90_000;
 const SUB2_ACCOUNT_USAGE_WINDOW_CACHE_TTL_MS = 45_000;
 const CPA_USAGE_COST_WINDOW_DAYS = 7;
@@ -1352,8 +1348,7 @@ export function sanitizeBaseUrl(baseUrl: string): string {
 }
 
 async function fetchCLIProxyAccounts(
-  platform: PlatformConfig,
-  options?: PlatformFetchOptions
+  platform: PlatformConfig
 ): Promise<UnifiedAccount[]> {
   const baseUrl = ensurePlatformReady(platform);
   const data = await requestWithFallback<CLIProxyListResponse>({
@@ -1362,13 +1357,8 @@ async function fetchCLIProxyAccounts(
     headers: getCLIProxyHeaders(platform)
   });
   const files = Array.isArray(data.files) ? data.files : [];
-  const includeHeavyMetrics = options?.includeHeavyMetrics === true;
   const [quotaByAuthIndex, usageCostByAuthIndex] = await Promise.all([
-    includeHeavyMetrics
-      ? buildCLIProxyQuotaByAuthIndex(platform, files).catch(
-          () => new Map<string, Record<string, unknown>>()
-        )
-      : Promise.resolve(new Map<string, Record<string, unknown>>()),
+    buildCLIProxyQuotaByAuthIndex(platform, files),
     fetchCLIProxyUsageCostByAuthIndex(platform).catch(
       () => new Map<string, CLIProxyUsageCostEstimate>()
     )
@@ -1557,8 +1547,7 @@ async function buildSub2ApiUsageWindowByAccountId(
 }
 
 async function fetchSub2ApiAccounts(
-  platform: PlatformConfig,
-  options?: PlatformFetchOptions
+  platform: PlatformConfig
 ): Promise<UnifiedAccount[]> {
   const baseUrl = ensurePlatformReady(platform);
   const data = await requestWithFallback<Sub2ApiEnvelope<Sub2ApiPaginated<Sub2ApiAccount>>>(
@@ -1578,18 +1567,13 @@ async function fetchSub2ApiAccounts(
     "Failed to fetch sub2api accounts."
   );
   const items = Array.isArray(pageData?.items) ? pageData.items : [];
-  const includeHeavyMetrics = options?.includeHeavyMetrics === true;
   const [usageStatsByAccountId, usageWindowByAccountId] = await Promise.all([
-    includeHeavyMetrics
-      ? buildSub2ApiStatsByAccountId(platform, items).catch(
-          () => new Map<string, Record<string, unknown>>()
-        )
-      : Promise.resolve(new Map<string, Record<string, unknown>>()),
-    includeHeavyMetrics
-      ? buildSub2ApiUsageWindowByAccountId(platform, items).catch(
-          () => new Map<string, Record<string, unknown>>()
-        )
-      : Promise.resolve(new Map<string, Record<string, unknown>>())
+    buildSub2ApiStatsByAccountId(platform, items).catch(
+      () => new Map<string, Record<string, unknown>>()
+    ),
+    buildSub2ApiUsageWindowByAccountId(platform, items).catch(
+      () => new Map<string, Record<string, unknown>>()
+    )
   ]);
 
   return items.map((item, index) => {
@@ -1714,14 +1698,13 @@ export async function fetchPlatformUsageTrend(
 }
 
 export async function fetchAccountsForPlatform(
-  platform: PlatformConfig,
-  options?: PlatformFetchOptions
+  platform: PlatformConfig
 ): Promise<PlatformFetchResult> {
   try {
     const accounts =
       platform.id === "cliproxyapi"
-        ? await fetchCLIProxyAccounts(platform, options)
-        : await fetchSub2ApiAccounts(platform, options);
+        ? await fetchCLIProxyAccounts(platform)
+        : await fetchSub2ApiAccounts(platform);
 
     return {
       platform,
@@ -1737,8 +1720,7 @@ export async function fetchAccountsForPlatform(
 }
 
 export async function fetchUnifiedAccounts(
-  platforms: PlatformConfig[],
-  options?: PlatformFetchOptions
+  platforms: PlatformConfig[]
 ): Promise<{ accounts: UnifiedAccount[]; errors: string[] }> {
   const enabledPlatforms = platforms.filter((item) => item.enabled);
   if (!enabledPlatforms.length) {
@@ -1749,7 +1731,7 @@ export async function fetchUnifiedAccounts(
   }
 
   const results = await Promise.all(
-    enabledPlatforms.map((platform) => fetchAccountsForPlatform(platform, options))
+    enabledPlatforms.map((platform) => fetchAccountsForPlatform(platform))
   );
 
   const accounts = results

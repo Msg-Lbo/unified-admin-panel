@@ -47,7 +47,7 @@ type FeedbackType = "success" | "warning" | "error";
 type AccountStateKind = "normal" | "exhausted" | "disabled" | "error" | "banned";
 const PLATFORM_KINDS: PlatformKind[] = ["sub2api", "cliproxyapi"];
 const AUTO_REFRESH_ALLOWED_SECONDS = [0, 15, 30, 60] as const;
-const DEFAULT_AUTO_REFRESH_SECONDS = 0;
+const DEFAULT_AUTO_REFRESH_SECONDS = 30;
 
 const autoRefreshOptions = [
   { label: "自动刷新：关闭", value: 0 },
@@ -456,9 +456,7 @@ async function refreshAccounts(options?: { silent?: boolean }): Promise<void> {
     loading.value = true;
   }
   try {
-    const result = await fetchUnifiedAccounts(platforms.value, {
-      includeHeavyMetrics: false
-    });
+    const result = await fetchUnifiedAccounts(platforms.value);
     const mergedAccounts = mergeAccountsWithFallback(result.accounts, result.errors);
     const shouldKeepOldSnapshot =
       mergedAccounts.length === 0 &&
@@ -607,9 +605,7 @@ async function refreshSingleAccount(account: UnifiedAccount): Promise<void> {
   saveSettings({ silent: true });
   singleRefreshLoadingUid.value = account.uid;
   try {
-    const result = await fetchAccountsForPlatform(platform, {
-      includeHeavyMetrics: false
-    });
+    const result = await fetchAccountsForPlatform(platform);
     if (result.error) {
       throw new Error(result.error);
     }
