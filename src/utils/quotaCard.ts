@@ -418,14 +418,15 @@ function resolveSub2Quota(raw: Record<string, unknown>): ResolvedQuotaBase {
     usageWindow7d?.reset_at ??
     usageWindow7d?.resetAt;
 
-  // Prefer codex/sub2api 7d progress, but ignore stale values after reset_at has passed.
+  // Prefer realtime usage window first, then fallback to extra cache fields.
   const codex7dCandidates: Array<{ value: unknown; resetAt?: unknown }> = [
+    { value: usageWindow7d?.utilization, resetAt: usageWindow7dResetAt },
+    { value: usageWindow7d?.used_percent, resetAt: usageWindow7dResetAt },
+    { value: usageWindow7d?.usedPercent, resetAt: usageWindow7dResetAt },
     { value: extra?.codex_7d_used_percent, resetAt: extraSevenDayResetAt },
     { value: extra?.codex_7d_utilization, resetAt: extraSevenDayResetAt },
     { value: extra?.seven_day_used_percent, resetAt: extraSevenDayResetAt },
-    { value: extra?.weekly_used_percent, resetAt: extraSevenDayResetAt },
-    { value: usageWindow7d?.utilization, resetAt: usageWindow7dResetAt },
-    { value: usageWindow7d?.used_percent, resetAt: usageWindow7dResetAt }
+    { value: extra?.weekly_used_percent, resetAt: extraSevenDayResetAt }
   ];
   let hasExpiredPercentCandidate = false;
   for (const candidate of codex7dCandidates) {
