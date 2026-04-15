@@ -457,7 +457,7 @@ async function refreshAccounts(options?: { silent?: boolean }): Promise<void> {
   }
   try {
     const result = await fetchUnifiedAccounts(platforms.value, {
-      includeHeavyMetrics: false
+      includeHeavyMetrics: !options?.silent
     });
     const mergedAccounts = mergeAccountsWithFallback(result.accounts, result.errors);
     const shouldKeepOldSnapshot =
@@ -608,7 +608,7 @@ async function refreshSingleAccount(account: UnifiedAccount): Promise<void> {
   singleRefreshLoadingUid.value = account.uid;
   try {
     const result = await fetchAccountsForPlatform(platform, {
-      includeHeavyMetrics: false
+      includeHeavyMetrics: true
     });
     if (result.error) {
       throw new Error(result.error);
