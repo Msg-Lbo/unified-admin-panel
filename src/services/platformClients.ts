@@ -155,10 +155,6 @@ interface CLIProxyUsageCostEstimate {
   requests: number;
 }
 
-interface Sub2ApiTodayStatsBatchPayload {
-  stats?: Record<string, Record<string, unknown>>;
-}
-
 interface PlatformFetchOptions {
   includeHeavyMetrics?: boolean;
 }
@@ -1005,7 +1001,6 @@ function mapSub2ApiAccountToUnified(
   platform: PlatformConfig,
   item: Sub2ApiAccount,
   index: number,
-  todayStats?: Record<string, unknown>,
   usageStats?: Record<string, unknown>,
   usageWindow?: Record<string, unknown>
 ): UnifiedAccount {
@@ -1029,9 +1024,6 @@ function mapSub2ApiAccountToUnified(
   };
   if (usageStats) {
     rawPayload.sub2_usage_stats = usageStats;
-  }
-  if (todayStats) {
-    rawPayload.sub2_today_stats = todayStats;
   }
   if (usageWindow) {
     rawPayload.sub2_usage_window = usageWindow;
@@ -1564,60 +1556,6 @@ async function buildSub2ApiUsageWindowByAccountId(
   return resultMap;
 }
 
-async function buildSub2ApiTodayStatsByAccountId(
-  platform: PlatformConfig,
-  items: Sub2ApiAccount[]
-): Promise<Map<string, Record<string, unknown>>> {
-  const accountIds: number[] = [];
-  const resultMap = new Map<string, Record<string, unknown>>();
-
-  for (const item of items) {
-    const accountIdText = pickFirstString(item.id as string | number | undefined);
-    if (!accountIdText) {
-      continue;
-    }
-    const accountId = Number.parseInt(accountIdText, 10);
-    if (!Number.isFinite(accountId)) {
-      continue;
-    }
-    accountIds.push(accountId);
-  }
-
-  if (!accountIds.length) {
-    return resultMap;
-  }
-
-  const baseUrl = ensurePlatformReady(platform);
-  const envelope = await requestWithFallback<Sub2ApiEnvelope<Sub2ApiTodayStatsBatchPayload>>({
-    method: "POST",
-    url: `${baseUrl}/api/v1/admin/accounts/today-stats/batch`,
-    data: {
-      account_ids: accountIds
-    },
-    headers: getSub2ApiHeaders(platform),
-    timeout: 12000
-  });
-
-  const payload = unwrapSub2Api<Sub2ApiTodayStatsBatchPayload>(
-    envelope,
-    "Failed to fetch sub2api today stats batch."
-  );
-  const stats = toRecord(payload?.stats);
-  if (!stats) {
-    return resultMap;
-  }
-
-  for (const [accountId, statValue] of Object.entries(stats)) {
-    const statRecord = toRecord(statValue);
-    if (!statRecord) {
-      continue;
-    }
-    resultMap.set(accountId, statRecord);
-  }
-
-  return resultMap;
-}
-
 async function fetchSub2ApiAccounts(
   platform: PlatformConfig,
   options?: PlatformFetchOptions
@@ -1641,10 +1579,7 @@ async function fetchSub2ApiAccounts(
   );
   const items = Array.isArray(pageData?.items) ? pageData.items : [];
   const includeHeavyMetrics = options?.includeHeavyMetrics === true;
-  const [todayStatsByAccountId, usageStatsByAccountId, usageWindowByAccountId] = await Promise.all([
-    buildSub2ApiTodayStatsByAccountId(platform, items).catch(
-      () => new Map<string, Record<string, unknown>>()
-    ),
+  const [usageStatsByAccountId, usageWindowByAccountId] = await Promise.all([
     includeHeavyMetrics
       ? buildSub2ApiStatsByAccountId(platform, items).catch(
           () => new Map<string, Record<string, unknown>>()
@@ -1659,17 +1594,9 @@ async function fetchSub2ApiAccounts(
 
   return items.map((item, index) => {
     const accountId = pickFirstString(item.id as string | number | undefined) ?? "";
-    const todayStats = accountId ? todayStatsByAccountId.get(accountId) : undefined;
     const usageStats = accountId ? usageStatsByAccountId.get(accountId) : undefined;
     const usageWindow = accountId ? usageWindowByAccountId.get(accountId) : undefined;
-    return mapSub2ApiAccountToUnified(
-      platform,
-      item,
-      index,
-      todayStats,
-      usageStats,
-      usageWindow
-    );
+    return mapSub2ApiAccountToUnified(platform, item, index, usageStats, usageWindow);
   });
 }
 
