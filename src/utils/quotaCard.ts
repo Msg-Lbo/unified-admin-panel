@@ -78,7 +78,18 @@ function formatUsd(value: number): string {
   return `$${value.toFixed(2)}`;
 }
 
+function pickFirstNonNegativeNumber(values: unknown[]): number | undefined {
+  for (const value of values) {
+    const numeric = toOptionalNumber(value);
+    if (typeof numeric === "number" && numeric >= 0) {
+      return numeric;
+    }
+  }
+  return undefined;
+}
+
 function resolveUsedUsd(raw: Record<string, unknown>): number | undefined {
+  // For CPA payloads, direct top-level cost fields are usually the most accurate.
   const direct = toOptionalNumber(
     raw.actual_cost ?? raw.total_actual_cost ?? raw.total_cost ?? raw.cost
   );
@@ -102,6 +113,50 @@ function resolveUsedUsd(raw: Record<string, unknown>): number | undefined {
   }
 
   return undefined;
+}
+
+function resolveSub2UsedUsd(raw: Record<string, unknown>): number | undefined {
+  // For sub2api, prefer sub2_usage_stats/window-scoped cost fields first.
+  const stats = toRecord(raw.sub2_usage_stats);
+  const summary = toRecord(stats?.summary);
+  const sevenDayStats = toRecord(
+    stats?.seven_day ?? stats?.sevenDay ?? stats?.window_7d
+  );
+  const sevenDaySummary = toRecord(sevenDayStats?.summary);
+  const usageWindow = toRecord(raw.sub2_usage_window ?? raw.usage_window);
+  const usageWindow7d = toRecord(
+    usageWindow?.seven_day ?? usageWindow?.sevenDay ?? usageWindow?.window_7d
+  );
+  const extra = toRecord(raw.extra);
+
+  const prioritized = pickFirstNonNegativeNumber([
+    sevenDaySummary?.total_actual_cost,
+    sevenDaySummary?.total_cost,
+    sevenDaySummary?.total_user_cost,
+    sevenDayStats?.total_actual_cost,
+    sevenDayStats?.total_cost,
+    sevenDayStats?.total_user_cost,
+    sevenDayStats?.actual_cost,
+    sevenDayStats?.user_cost,
+    sevenDayStats?.used_usd,
+    usageWindow7d?.total_actual_cost,
+    usageWindow7d?.total_cost,
+    usageWindow7d?.total_user_cost,
+    usageWindow7d?.actual_cost,
+    usageWindow7d?.user_cost,
+    usageWindow7d?.used_usd,
+    summary?.total_actual_cost,
+    summary?.total_cost,
+    summary?.total_user_cost,
+    extra?.codex_7d_used_usd,
+    extra?.seven_day_used_usd,
+    extra?.weekly_used_usd
+  ]);
+  if (typeof prioritized === "number") {
+    return prioritized;
+  }
+
+  return resolveUsedUsd(raw);
 }
 
 function resolveRemainingUsd(raw: Record<string, unknown>): number | undefined {
@@ -319,7 +374,8 @@ export function buildAccountQuotaMetrics(account: UnifiedAccount): QuotaCardMetr
     };
   }
 
-  const usedUsd = resolveUsedUsd(raw);
+  const usedUsd =
+    account.platform === "sub2api" ? resolveSub2UsedUsd(raw) : resolveUsedUsd(raw);
   const remainingUsd = resolveRemainingUsd(raw);
   const base =
     account.platform === "sub2api" ? resolveSub2Quota(raw) : resolveCpaQuota(raw);
