@@ -156,7 +156,12 @@ interface CLIProxyUsageCostEstimate {
 }
 
 const SUB2_ACCOUNT_STATS_CACHE_TTL_MS = 90_000;
+const SUB2_ACCOUNT_USAGE_WINDOW_CACHE_TTL_MS = 45_000;
 const sub2AccountStatsCache = new Map<
+  string,
+  { expiresAt: number; payload: Record<string, unknown> }
+>();
+const sub2AccountUsageWindowCache = new Map<
   string,
   { expiresAt: number; payload: Record<string, unknown> }
 >();
@@ -710,6 +715,34 @@ function writeSub2AccountStatsCache(
   });
 }
 
+function readSub2AccountUsageWindowCache(
+  platform: PlatformConfig,
+  accountId: number
+): Record<string, unknown> | undefined {
+  const cacheKey = getSub2AccountStatsCacheKey(platform, accountId);
+  const cached = sub2AccountUsageWindowCache.get(cacheKey);
+  if (!cached) {
+    return undefined;
+  }
+  if (cached.expiresAt <= Date.now()) {
+    sub2AccountUsageWindowCache.delete(cacheKey);
+    return undefined;
+  }
+  return cached.payload;
+}
+
+function writeSub2AccountUsageWindowCache(
+  platform: PlatformConfig,
+  accountId: number,
+  payload: Record<string, unknown>
+): void {
+  const cacheKey = getSub2AccountStatsCacheKey(platform, accountId);
+  sub2AccountUsageWindowCache.set(cacheKey, {
+    expiresAt: Date.now() + SUB2_ACCOUNT_USAGE_WINDOW_CACHE_TTL_MS,
+    payload
+  });
+}
+
 function getRequiredApiKey(platform: PlatformConfig): string {
   const apiKey = platform.apiKey.trim();
   if (!apiKey) {
@@ -942,7 +975,8 @@ function mapSub2ApiAccountToUnified(
   platform: PlatformConfig,
   item: Sub2ApiAccount,
   index: number,
-  usageStats?: Record<string, unknown>
+  usageStats?: Record<string, unknown>,
+  usageWindow?: Record<string, unknown>
 ): UnifiedAccount {
   const accountId =
     pickFirstString(item.id as string | number | undefined) ??
@@ -964,6 +998,9 @@ function mapSub2ApiAccountToUnified(
   };
   if (usageStats) {
     rawPayload.sub2_usage_stats = usageStats;
+  }
+  if (usageWindow) {
+    rawPayload.sub2_usage_window = usageWindow;
   }
 
   return {
@@ -1246,6 +1283,43 @@ async function fetchSub2ApiAccountStats(
   return undefined;
 }
 
+async function fetchSub2ApiAccountUsageWindow(
+  platform: PlatformConfig,
+  accountId: number
+): Promise<Record<string, unknown> | undefined> {
+  const cached = readSub2AccountUsageWindowCache(platform, accountId);
+  if (cached) {
+    return cached;
+  }
+
+  const baseUrl = ensurePlatformReady(platform);
+  const sources = ["passive", "active"] as const;
+
+  for (const source of sources) {
+    try {
+      const envelope = await requestWithFallback<Sub2ApiEnvelope<Record<string, unknown>>>({
+        method: "GET",
+        url: `${baseUrl}/api/v1/admin/accounts/${accountId}/usage`,
+        params: { source },
+        headers: getSub2ApiHeaders(platform),
+        timeout: 10000
+      });
+      const payload = unwrapSub2Api<Record<string, unknown>>(
+        envelope,
+        `Failed to fetch sub2api usage window for account ${accountId}.`
+      );
+      if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+        writeSub2AccountUsageWindowCache(platform, accountId, payload);
+        return payload;
+      }
+    } catch {
+      // fall through and try next source
+    }
+  }
+
+  return undefined;
+}
+
 async function buildSub2ApiStatsByAccountId(
   platform: PlatformConfig,
   items: Sub2ApiAccount[]
@@ -1295,6 +1369,55 @@ async function buildSub2ApiStatsByAccountId(
   return resultMap;
 }
 
+async function buildSub2ApiUsageWindowByAccountId(
+  platform: PlatformConfig,
+  items: Sub2ApiAccount[]
+): Promise<Map<string, Record<string, unknown>>> {
+  const jobs: Array<{
+    accountId: string;
+    task: () => Promise<Record<string, unknown> | undefined>;
+  }> = [];
+
+  for (const item of items) {
+    const accountIdText = pickFirstString(item.id as string | number | undefined);
+    if (!accountIdText) {
+      continue;
+    }
+    const accountId = Number.parseInt(accountIdText, 10);
+    if (!Number.isFinite(accountId)) {
+      continue;
+    }
+    jobs.push({
+      accountId: accountIdText,
+      task: () => fetchSub2ApiAccountUsageWindow(platform, accountId)
+    });
+  }
+
+  const resultMap = new Map<string, Record<string, unknown>>();
+  if (!jobs.length) {
+    return resultMap;
+  }
+
+  const results = await runWithConcurrency(
+    jobs.map(({ task }) => async () => {
+      try {
+        return await task();
+      } catch {
+        return undefined;
+      }
+    }),
+    6
+  );
+
+  for (let i = 0; i < jobs.length; i += 1) {
+    const payload = results[i];
+    if (payload && Object.keys(payload).length > 0) {
+      resultMap.set(jobs[i].accountId, payload);
+    }
+  }
+  return resultMap;
+}
+
 async function fetchSub2ApiAccounts(
   platform: PlatformConfig
 ): Promise<UnifiedAccount[]> {
@@ -1316,14 +1439,20 @@ async function fetchSub2ApiAccounts(
     "Failed to fetch sub2api accounts."
   );
   const items = Array.isArray(pageData?.items) ? pageData.items : [];
-  const usageStatsByAccountId = await buildSub2ApiStatsByAccountId(platform, items).catch(
-    () => new Map<string, Record<string, unknown>>()
-  );
+  const [usageStatsByAccountId, usageWindowByAccountId] = await Promise.all([
+    buildSub2ApiStatsByAccountId(platform, items).catch(
+      () => new Map<string, Record<string, unknown>>()
+    ),
+    buildSub2ApiUsageWindowByAccountId(platform, items).catch(
+      () => new Map<string, Record<string, unknown>>()
+    )
+  ]);
 
   return items.map((item, index) => {
     const accountId = pickFirstString(item.id as string | number | undefined) ?? "";
     const usageStats = accountId ? usageStatsByAccountId.get(accountId) : undefined;
-    return mapSub2ApiAccountToUnified(platform, item, index, usageStats);
+    const usageWindow = accountId ? usageWindowByAccountId.get(accountId) : undefined;
+    return mapSub2ApiAccountToUnified(platform, item, index, usageStats, usageWindow);
   });
 }
 

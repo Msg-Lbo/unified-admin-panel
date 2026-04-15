@@ -88,6 +88,81 @@ function pickFirstNonNegativeNumber(values: unknown[]): number | undefined {
   return undefined;
 }
 
+function toDateKey(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const key = value.trim().slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(key)) {
+    return key;
+  }
+  return undefined;
+}
+
+function sumRecentHistoryUsedUsd(
+  stats: Record<string, unknown> | undefined,
+  recentDays: number
+): number | undefined {
+  if (!stats || recentDays <= 0) {
+    return undefined;
+  }
+
+  const history = Array.isArray(stats.history) ? stats.history : [];
+  if (!history.length) {
+    return undefined;
+  }
+
+  const dayCostMap = new Map<string, number>();
+  const orderedCosts: number[] = [];
+  for (const entry of history) {
+    const record = toRecord(entry);
+    if (!record) {
+      continue;
+    }
+
+    const dayUsed = pickFirstNonNegativeNumber([
+      record.user_cost,
+      record.userCost,
+      record.total_user_cost,
+      record.totalUserCost,
+      record.used_usd,
+      record.usedUsd,
+      record.actual_cost,
+      record.actualCost,
+      record.total_actual_cost,
+      record.totalActualCost,
+      record.cost,
+      record.total_cost,
+      record.totalCost
+    ]);
+    if (typeof dayUsed !== "number") {
+      continue;
+    }
+    orderedCosts.push(dayUsed);
+
+    const dayKey = toDateKey(record.date ?? record.day ?? record.label);
+    if (dayKey) {
+      dayCostMap.set(dayKey, dayUsed);
+    }
+  }
+
+  if (dayCostMap.size > 0) {
+    const keys = Array.from(dayCostMap.keys()).sort();
+    const recentKeys = keys.slice(-recentDays);
+    const total = recentKeys.reduce((sum, key) => sum + (dayCostMap.get(key) ?? 0), 0);
+    return Number.isFinite(total) ? total : undefined;
+  }
+
+  if (!orderedCosts.length) {
+    return undefined;
+  }
+
+  const total = orderedCosts
+    .slice(-recentDays)
+    .reduce((sum, value) => sum + value, 0);
+  return Number.isFinite(total) ? total : undefined;
+}
+
 function resolveUsedUsd(raw: Record<string, unknown>): number | undefined {
   // For CPA payloads, direct top-level cost fields are usually the most accurate.
   const direct = toOptionalNumber(
@@ -127,30 +202,73 @@ function resolveSub2UsedUsd(raw: Record<string, unknown>): number | undefined {
   const usageWindow7d = toRecord(
     usageWindow?.seven_day ?? usageWindow?.sevenDay ?? usageWindow?.window_7d
   );
+  const usageWindow7dStats = toRecord(
+    usageWindow7d?.window_stats ?? usageWindow7d?.windowStats
+  );
   const extra = toRecord(raw.extra);
+  const summaryDays = toOptionalNumber(summary?.days ?? summary?.window_days ?? summary?.windowDays);
+  const history7dUsed = sumRecentHistoryUsedUsd(stats, 7);
 
   const prioritized = pickFirstNonNegativeNumber([
-    sevenDaySummary?.total_actual_cost,
-    sevenDaySummary?.total_cost,
+    raw.codex_7d_used_usd,
+    raw.codex7dUsedUsd,
+    raw.seven_day_used_usd,
+    raw.sevenDayUsedUsd,
+    raw.weekly_used_usd,
+    raw.weeklyUsedUsd,
+    usageWindow7dStats?.user_cost,
+    usageWindow7dStats?.userCost,
+    usageWindow7dStats?.actual_cost,
+    usageWindow7dStats?.actualCost,
+    usageWindow7dStats?.cost,
+    usageWindow7dStats?.standard_cost,
+    usageWindow7dStats?.standardCost,
     sevenDaySummary?.total_user_cost,
-    sevenDayStats?.total_actual_cost,
-    sevenDayStats?.total_cost,
+    sevenDaySummary?.totalUserCost,
+    sevenDaySummary?.total_actual_cost,
+    sevenDaySummary?.totalActualCost,
+    sevenDaySummary?.total_cost,
+    sevenDaySummary?.totalCost,
+    sevenDaySummary?.user_cost,
+    sevenDaySummary?.userCost,
+    sevenDaySummary?.actual_cost,
+    sevenDaySummary?.actualCost,
+    sevenDaySummary?.used_usd,
+    sevenDaySummary?.usedUsd,
     sevenDayStats?.total_user_cost,
-    sevenDayStats?.actual_cost,
+    sevenDayStats?.totalUserCost,
+    sevenDayStats?.total_actual_cost,
+    sevenDayStats?.totalActualCost,
+    sevenDayStats?.total_cost,
+    sevenDayStats?.totalCost,
     sevenDayStats?.user_cost,
+    sevenDayStats?.userCost,
+    sevenDayStats?.actual_cost,
+    sevenDayStats?.actualCost,
     sevenDayStats?.used_usd,
-    usageWindow7d?.total_actual_cost,
-    usageWindow7d?.total_cost,
+    sevenDayStats?.usedUsd,
     usageWindow7d?.total_user_cost,
-    usageWindow7d?.actual_cost,
+    usageWindow7d?.totalUserCost,
+    usageWindow7d?.total_actual_cost,
+    usageWindow7d?.totalActualCost,
+    usageWindow7d?.total_cost,
+    usageWindow7d?.totalCost,
     usageWindow7d?.user_cost,
+    usageWindow7d?.userCost,
+    usageWindow7d?.actual_cost,
+    usageWindow7d?.actualCost,
     usageWindow7d?.used_usd,
-    summary?.total_actual_cost,
-    summary?.total_cost,
-    summary?.total_user_cost,
+    usageWindow7d?.usedUsd,
     extra?.codex_7d_used_usd,
+    extra?.codex7dUsedUsd,
     extra?.seven_day_used_usd,
-    extra?.weekly_used_usd
+    extra?.sevenDayUsedUsd,
+    extra?.weekly_used_usd,
+    extra?.weeklyUsedUsd,
+    history7dUsed,
+    typeof summaryDays === "number" && summaryDays <= 7 ? summary?.total_user_cost : undefined,
+    typeof summaryDays === "number" && summaryDays <= 7 ? summary?.total_actual_cost : undefined,
+    typeof summaryDays === "number" && summaryDays <= 7 ? summary?.total_cost : undefined
   ]);
   if (typeof prioritized === "number") {
     return prioritized;
@@ -379,13 +497,16 @@ export function buildAccountQuotaMetrics(account: UnifiedAccount): QuotaCardMetr
   const remainingUsd = resolveRemainingUsd(raw);
   const base =
     account.platform === "sub2api" ? resolveSub2Quota(raw) : resolveCpaQuota(raw);
+  const preferPercentBasedTotal =
+    account.platform === "sub2api" && typeof base.usedPercent === "number";
 
   const inferredTotalUsd = inferTotalByUsage({
     usedUsd,
-    remainingUsd,
+    remainingUsd: preferPercentBasedTotal ? undefined : remainingUsd,
     remainingPercent: base.remainingPercent
   });
   const monetaryTotalUsd =
+    !preferPercentBasedTotal &&
     typeof usedUsd === "number" &&
     usedUsd >= 0 &&
     typeof remainingUsd === "number" &&
