@@ -228,6 +228,7 @@ function resolveUsedUsd(raw: Record<string, unknown>): number | undefined {
 
 function resolveSub2UsedUsd(raw: Record<string, unknown>): number | undefined {
   // For sub2api, prefer sub2_usage_stats/window-scoped cost fields first.
+  const todayStats = toRecord(raw.sub2_today_stats ?? raw.today_stats ?? raw.todayStats);
   const stats = toRecord(raw.sub2_usage_stats);
   const summary = toRecord(stats?.summary);
   const sevenDayStats = toRecord(
@@ -246,6 +247,15 @@ function resolveSub2UsedUsd(raw: Record<string, unknown>): number | undefined {
   const history7dUsed = sumRecentHistoryUsedUsd(stats, 7);
 
   const prioritized = pickFirstNonNegativeNumber([
+    todayStats?.user_cost,
+    todayStats?.userCost,
+    todayStats?.actual_cost,
+    todayStats?.actualCost,
+    todayStats?.cost,
+    todayStats?.standard_cost,
+    todayStats?.standardCost,
+    todayStats?.used_usd,
+    todayStats?.usedUsd,
     raw.codex_7d_used_usd,
     raw.codex7dUsedUsd,
     raw.seven_day_used_usd,
