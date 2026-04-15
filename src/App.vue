@@ -44,7 +44,7 @@ const LOGIN_PASSWORD_ENV = String(import.meta.env.VITE_LOGIN_PASSWORD ?? "").tri
 const LOGIN_TOKEN_ENV = String(import.meta.env.VITE_LOGIN_TOKEN ?? "").trim();
 
 type FeedbackType = "success" | "warning" | "error";
-type AccountStateKind = "normal" | "exhausted" | "disabled" | "error";
+type AccountStateKind = "normal" | "exhausted" | "disabled" | "error" | "banned";
 const PLATFORM_KINDS: PlatformKind[] = ["sub2api", "cliproxyapi"];
 const AUTO_REFRESH_ALLOWED_SECONDS = [0, 15, 30, 60] as const;
 const DEFAULT_AUTO_REFRESH_SECONDS = 30;
@@ -764,12 +764,21 @@ function buildQuotaMarkUidSet(
 }
 
 function resolveAccountState(account: UnifiedAccount): AccountStateKind {
+  const normalized = account.status.trim().toLowerCase();
+  if (
+    normalized.includes("banned") ||
+    normalized.includes("deactivated") ||
+    normalized.includes("account_deactivated") ||
+    normalized.includes("suspended")
+  ) {
+    return "banned";
+  }
+
   const metrics = getMetrics(account);
   if (metrics.exhausted) {
     return "exhausted";
   }
 
-  const normalized = account.status.trim().toLowerCase();
   if (normalized.includes("rate_limited") || normalized.includes("rate limit")) {
     return "exhausted";
   }
@@ -800,7 +809,8 @@ function summarizeAccountStates(list: UnifiedAccount[]): Record<AccountStateKind
     normal: 0,
     exhausted: 0,
     disabled: 0,
-    error: 0
+    error: 0,
+    banned: 0
   };
   for (const account of list) {
     summary[resolveAccountState(account)] += 1;
@@ -1260,6 +1270,7 @@ onBeforeUnmount(() => {
               <div class="platform-pane__status-list">
                 <span class="status-chip status-chip--normal">正常 {{ sub2apiStateSummary.normal }}</span>
                 <span class="status-chip status-chip--exhausted">用尽 {{ sub2apiStateSummary.exhausted }}</span>
+                <span class="status-chip status-chip--banned">封禁 {{ sub2apiStateSummary.banned }}</span>
                 <span class="status-chip status-chip--disabled">停用 {{ sub2apiStateSummary.disabled }}</span>
                 <span class="status-chip status-chip--error">异常 {{ sub2apiStateSummary.error }}</span>
               </div>
@@ -1320,6 +1331,7 @@ onBeforeUnmount(() => {
               <div class="platform-pane__status-list">
                 <span class="status-chip status-chip--normal">正常 {{ cpaStateSummary.normal }}</span>
                 <span class="status-chip status-chip--exhausted">用尽 {{ cpaStateSummary.exhausted }}</span>
+                <span class="status-chip status-chip--banned">封禁 {{ cpaStateSummary.banned }}</span>
                 <span class="status-chip status-chip--disabled">停用 {{ cpaStateSummary.disabled }}</span>
                 <span class="status-chip status-chip--error">异常 {{ cpaStateSummary.error }}</span>
               </div>

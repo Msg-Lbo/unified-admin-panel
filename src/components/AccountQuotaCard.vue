@@ -127,35 +127,55 @@ function formatUsd(value: number): string {
   return `$${value.toFixed(2)}`;
 }
 
-const statusTone = computed<"ok" | "warn" | "error">(() => {
-  if (props.metrics.exhausted) {
-    return "warn";
-  }
+const statusTone = computed<"ok" | "exhausted" | "error" | "banned" | "disabled">(() => {
   const normalized = props.account.status.trim().toLowerCase();
   if (
-    normalized.includes("error") ||
-    normalized.includes("invalid") ||
     normalized.includes("banned") ||
-    normalized.includes("failed")
+    normalized.includes("deactivated") ||
+    normalized.includes("account_deactivated")
   ) {
-    return "error";
+    return "banned";
+  }
+  if (props.metrics.exhausted) {
+    return "exhausted";
   }
   if (
     normalized.includes("inactive") ||
-    normalized.includes("disabled") ||
+    normalized.includes("disabled")
+  ) {
+    return "disabled";
+  }
+  if (
     normalized.includes("quota") ||
     normalized.includes("exhausted") ||
+    normalized.includes("rate_limited") ||
+    normalized.includes("rate limit") ||
     normalized.includes("limit") ||
     normalized.includes("retry")
   ) {
-    return "warn";
+    return "exhausted";
+  }
+  if (
+    normalized.includes("error") ||
+    normalized.includes("invalid") ||
+    normalized.includes("failed")
+  ) {
+    return "error";
   }
   return "ok";
 });
 
 const statusLabel = computed(() => {
+  const normalized = props.account.status.trim().toLowerCase();
+  if (
+    normalized.includes("banned") ||
+    normalized.includes("deactivated") ||
+    normalized.includes("account_deactivated")
+  ) {
+    return "封禁";
+  }
   if (props.metrics.exhausted) {
-    return "棰濆害鐢ㄥ敖";
+    return "额度用尽";
   }
   return normalizeStatusLabel(props.account.status);
 });
@@ -312,9 +332,11 @@ function handleContextMenu(event: MouseEvent): void {
           {{ planType }}
         </span>
         <span v-if="markHighest" class="account-card__mark account-card__mark--highest">
-          鏈€楂?        </span>
+          最高
+        </span>
         <span v-if="markLowest" class="account-card__mark account-card__mark--lowest">
-          鏈€浣?        </span>
+          最低
+        </span>
       </div>
     </header>
 

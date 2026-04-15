@@ -200,8 +200,8 @@ const SUB2API_QUOTA_HINTS = [
   "billing hard limit",
   "credit balance is too low",
   "out of credits",
-  "棰濆害",
-  "鐢ㄥ畬"
+  "额度",
+  "用完"
 ];
 
 const SUB2API_RATE_LIMIT_HINTS = [

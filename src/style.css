@@ -290,9 +290,15 @@ body {
 }
 
 .status-chip--exhausted {
+  color: #fef3c7;
+  background: rgba(234, 179, 8, 0.22);
+  border-color: rgba(250, 204, 21, 0.45);
+}
+
+.status-chip--banned {
   color: #fee2e2;
-  background: rgba(190, 24, 93, 0.22);
-  border-color: rgba(244, 63, 94, 0.4);
+  background: rgba(220, 38, 38, 0.25);
+  border-color: rgba(248, 113, 113, 0.45);
 }
 
 .status-chip--disabled {
@@ -302,9 +308,9 @@ body {
 }
 
 .status-chip--error {
-  color: #fecaca;
-  background: rgba(220, 38, 38, 0.25);
-  border-color: rgba(248, 113, 113, 0.45);
+  color: #ffedd5;
+  background: rgba(249, 115, 22, 0.24);
+  border-color: rgba(251, 146, 60, 0.46);
 }
 
 .quota-chip {
@@ -522,15 +528,28 @@ body {
 }
 
 .account-card__status--ok {
-  background: rgba(45, 212, 191, 0.24);
+  background: rgba(22, 163, 74, 0.25);
+  border-color: rgba(34, 197, 94, 0.45);
 }
 
-.account-card__status--warn {
-  background: rgba(250, 204, 21, 0.26);
+.account-card__status--exhausted {
+  background: rgba(234, 179, 8, 0.22);
+  border-color: rgba(250, 204, 21, 0.45);
 }
 
 .account-card__status--error {
-  background: rgba(248, 113, 113, 0.26);
+  background: rgba(249, 115, 22, 0.24);
+  border-color: rgba(251, 146, 60, 0.46);
+}
+
+.account-card__status--banned {
+  background: rgba(220, 38, 38, 0.25);
+  border-color: rgba(248, 113, 113, 0.45);
+}
+
+.account-card__status--disabled {
+  background: rgba(75, 85, 99, 0.25);
+  border-color: rgba(148, 163, 184, 0.45);
 }
 
 .account-card__quota {

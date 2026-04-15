@@ -529,7 +529,7 @@ function resolveCpaQuota(raw: Record<string, unknown>): ResolvedQuotaBase {
     return {
       total: 100,
       used: usedPercent,
-      totalText: "7d闄愰 100%",
+      totalText: "7d限额 100%",
       usedText: formatPercent(usedPercent),
       remainingPercent: normalizePercent(100 - usedPercent),
       usedPercent
@@ -594,7 +594,7 @@ export function buildAccountQuotaMetrics(account: UnifiedAccount): QuotaCardMetr
     inferredTotalUsd > 0
   ) {
     totalValue = inferredTotalUsd;
-    totalText = `浼扮畻 ${formatUsd(inferredTotalUsd)}`;
+    totalText = `估算 ${formatUsd(inferredTotalUsd)}`;
   }
 
   if (typeof usedUsdValue === "number") {
@@ -605,7 +605,7 @@ export function buildAccountQuotaMetrics(account: UnifiedAccount): QuotaCardMetr
   if (
     typeof remainingUsd === "number" &&
     totalText !== "-" &&
-    !totalText.includes("浼扮畻") &&
+    !totalText.includes("估算") &&
     typeof usedUsdValue !== "number"
   ) {
     totalText = `${totalText} / ${formatUsd(remainingUsd + (usedUsdValue ?? 0))}`;
