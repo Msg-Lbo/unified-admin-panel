@@ -5,6 +5,8 @@ export interface QuotaCardMetrics {
   usedText: string;
   totalValue?: number;
   usedValue?: number;
+  usedUsdValue?: number;
+  totalUsdValue?: number;
   usdQuotaValue?: number;
   remainingPercent?: number;
   usedPercent?: number;
@@ -335,12 +337,14 @@ export function buildAccountQuotaMetrics(account: UnifiedAccount): QuotaCardMetr
       ? usedUsd + remainingUsd
       : inferredTotalUsd;
 
-  const usdQuotaValue =
+  const totalUsdValue =
     typeof monetaryTotalUsd === "number" && monetaryTotalUsd > 0
       ? monetaryTotalUsd
-      : typeof usedUsd === "number" && usedUsd > 0
-      ? usedUsd
       : undefined;
+  const usedUsdValue =
+    typeof usedUsd === "number" && usedUsd >= 0 ? usedUsd : undefined;
+  const usdQuotaValue =
+    totalUsdValue ?? (typeof usedUsdValue === "number" && usedUsdValue > 0 ? usedUsdValue : undefined);
 
   let totalValue = usdQuotaValue ?? base.total;
   let usedValue = base.used;
@@ -356,18 +360,18 @@ export function buildAccountQuotaMetrics(account: UnifiedAccount): QuotaCardMetr
     totalText = `估算 ${formatUsd(inferredTotalUsd)}`;
   }
 
-  if (typeof usedUsd === "number") {
-    usedValue = usedUsd;
-    usedText = usedText === "-" ? formatUsd(usedUsd) : `${usedText} / ${formatUsd(usedUsd)}`;
+  if (typeof usedUsdValue === "number") {
+    usedValue = usedUsdValue;
+    usedText = usedText === "-" ? formatUsd(usedUsdValue) : `${usedText} / ${formatUsd(usedUsdValue)}`;
   }
 
   if (
     typeof remainingUsd === "number" &&
     totalText !== "-" &&
     !totalText.includes("估算") &&
-    typeof usedUsd !== "number"
+    typeof usedUsdValue !== "number"
   ) {
-    totalText = `${totalText} / ${formatUsd(remainingUsd + (usedUsd ?? 0))}`;
+    totalText = `${totalText} / ${formatUsd(remainingUsd + (usedUsdValue ?? 0))}`;
   }
 
   const usedPercent = base.usedPercent;
@@ -378,6 +382,8 @@ export function buildAccountQuotaMetrics(account: UnifiedAccount): QuotaCardMetr
     usedText,
     totalValue,
     usedValue,
+    usedUsdValue,
+    totalUsdValue,
     usdQuotaValue,
     remainingPercent: base.remainingPercent,
     usedPercent,

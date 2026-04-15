@@ -108,6 +108,18 @@ function resolvePlanTypeFromAccount(account: UnifiedAccount): PlanType {
   return "unknown";
 }
 
+function formatPercent(value: number): string {
+  const normalized = Math.max(0, Math.min(100, value));
+  if (normalized >= 100) {
+    return `${Math.round(normalized)}%`;
+  }
+  return `${normalized.toFixed(1)}%`;
+}
+
+function formatUsd(value: number): string {
+  return `$${value.toFixed(2)}`;
+}
+
 const statusTone = computed<"ok" | "warn" | "error">(() => {
   if (props.metrics.exhausted) {
     return "warn";
@@ -163,30 +175,31 @@ const resolvedRemainingPercent = computed(() =>
   Math.max(0, Math.min(100, 100 - resolvedUsedPercent.value))
 );
 
-function extractUsdAmount(text: string): string | undefined {
-  const matched = text.match(/\$\d+(?:,\d{3})*(?:\.\d+)?/);
-  return matched?.[0];
-}
+const unifiedUsedDisplayText = computed(() => {
+  const percent =
+    typeof props.metrics.usedPercent === "number"
+      ? formatPercent(props.metrics.usedPercent)
+      : undefined;
+  const usedUsd = props.metrics.usedUsdValue;
+  const totalUsd = props.metrics.totalUsdValue;
 
-const usedQuotaDisplayText = computed(() => {
-  const usedText = props.metrics.usedText?.trim() || "-";
-  if (usedText === "-" || usedText.includes("/")) {
-    return usedText;
+  if (percent) {
+    const usedText =
+      typeof usedUsd === "number" && Number.isFinite(usedUsd) ? formatUsd(usedUsd) : "-";
+    const totalText =
+      typeof totalUsd === "number" && Number.isFinite(totalUsd) && totalUsd > 0
+        ? formatUsd(totalUsd)
+        : "-";
+    return `${percent}(${usedText}/${totalText})`;
   }
 
-  const totalUsd = extractUsdAmount(props.metrics.totalText ?? "");
-  if (!totalUsd) {
-    return usedText;
-  }
-  if (usedText.includes(totalUsd)) {
-    return usedText;
-  }
-  return `${usedText} / ${totalUsd}`;
+  const fallback = props.metrics.usedText?.trim();
+  return fallback && fallback.length > 0 ? fallback : "-";
 });
 
 const metricSignature = computed(
   () =>
-    `${props.metrics.totalText}|${props.metrics.usedText}|${props.metrics.remainingPercent ?? ""}|${props.metrics.usedPercent ?? ""}|${props.metrics.exhausted ? "1" : "0"}`
+    `${props.metrics.totalText}|${props.metrics.usedText}|${props.metrics.totalUsdValue ?? ""}|${props.metrics.usedUsdValue ?? ""}|${props.metrics.remainingPercent ?? ""}|${props.metrics.usedPercent ?? ""}|${props.metrics.exhausted ? "1" : "0"}`
 );
 
 let mountedOnce = false;
@@ -303,7 +316,7 @@ function handleContextMenu(event: MouseEvent): void {
     <div class="account-card__quota">
       <div class="account-card__quota-row">
         <span>已使用</span>
-        <strong>{{ usedQuotaDisplayText }}</strong>
+        <strong>{{ unifiedUsedDisplayText }}</strong>
       </div>
     </div>
   </article>
