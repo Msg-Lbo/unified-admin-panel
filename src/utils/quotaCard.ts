@@ -50,7 +50,9 @@ function normalizePercent(value: number): number {
 }
 
 function normalizePercentageLike(value: number): number {
-  if (value >= 0 && value <= 1) {
+  // Sub2/CPA payloads are usually already in 0-100 percent scale.
+  // Only treat strict fractional values (0,1) as ratios.
+  if (value >= 0 && value < 1) {
     return value * 100;
   }
   return value;

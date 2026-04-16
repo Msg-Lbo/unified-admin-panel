@@ -513,15 +513,81 @@ function pickFirstText(values: unknown[]): string | undefined {
   return undefined;
 }
 
+function toTokenCandidate(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const normalized = value.trim();
+  if (!normalized) {
+    return undefined;
+  }
+  if (normalized.length < 16) {
+    return undefined;
+  }
+  return normalized;
+}
+
+function extractTokenFromRecord(record: Record<string, unknown> | undefined): string | undefined {
+  if (!record) {
+    return undefined;
+  }
+
+  const direct = pickFirstText([
+    record.access_token,
+    record.accessToken,
+    record.oauth_access_token,
+    record.oauthAccessToken,
+    record.bearer_token,
+    record.bearerToken,
+    record.session_token,
+    record.sessionToken,
+    record.token
+  ]);
+  const directToken = toTokenCandidate(direct);
+  if (directToken) {
+    return directToken;
+  }
+
+  const nestedKeys = ["oauth", "auth", "tokens", "credentials"];
+  for (const key of nestedKeys) {
+    const nested = toRecord(record[key]);
+    const nestedToken = extractTokenFromRecord(nested);
+    if (nestedToken) {
+      return nestedToken;
+    }
+  }
+
+  return undefined;
+}
+
 function resolveAccessToken(account: UnifiedAccount): string | undefined {
   const raw = toRecord(account.raw);
   const credentials = toRecord(raw?.credentials);
-  return pickFirstText([
-    credentials?.access_token,
-    credentials?.accessToken,
-    raw?.access_token,
-    raw?.accessToken
-  ]);
+  const metadata = toRecord(raw?.metadata);
+  const attributes = toRecord(raw?.attributes);
+
+  const resolved =
+    extractTokenFromRecord(credentials) ??
+    extractTokenFromRecord(metadata) ??
+    extractTokenFromRecord(attributes) ??
+    extractTokenFromRecord(raw);
+  if (resolved) {
+    return resolved;
+  }
+
+  // cpa 场景下某些实现只回传 id_token，作为兜底提供复制能力。
+  if (account.platform === "cliproxyapi") {
+    return toTokenCandidate(
+      pickFirstText([
+        credentials?.id_token,
+        metadata?.id_token,
+        attributes?.id_token,
+        raw?.id_token
+      ])
+    );
+  }
+
+  return undefined;
 }
 
 function copyTextBySelection(text: string): boolean {
