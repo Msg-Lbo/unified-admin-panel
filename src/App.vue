@@ -845,8 +845,13 @@ function resolveAccountState(account: UnifiedAccount): AccountStateKind {
     return "exhausted";
   }
 
-  if (normalized.includes("rate_limited") || normalized.includes("rate limit")) {
-    return "exhausted";
+  if (
+    normalized.includes("rate_limited") ||
+    normalized.includes("rate limit") ||
+    normalized.includes("ratelimited") ||
+    normalized.includes("retry")
+  ) {
+    return "error";
   }
   if (normalized.includes("inactive") || normalized.includes("disabled")) {
     return "disabled";
@@ -863,7 +868,8 @@ function resolveAccountState(account: UnifiedAccount): AccountStateKind {
     normalized.includes("quota_exhausted") ||
     normalized.includes("usage_limit_reached") ||
     normalized.includes("insufficient_quota") ||
-    normalized.includes("quota exhausted")
+    normalized.includes("quota exhausted") ||
+    normalized.includes("insufficient quota")
   ) {
     return "exhausted";
   }

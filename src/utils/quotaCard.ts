@@ -368,17 +368,11 @@ function getWindowSeconds(
 }
 
 function getWindowUsedPercent(
-  window: Record<string, unknown> | undefined,
-  limitInfo: Record<string, unknown> | undefined
+  window: Record<string, unknown> | undefined
 ): number | undefined {
   const direct = toOptionalNumber(window?.used_percent ?? window?.usedPercent);
   if (typeof direct === "number") {
     return normalizePercent(normalizePercentageLike(direct));
-  }
-  const limitReached = limitInfo?.limit_reached ?? limitInfo?.limitReached;
-  const allowed = limitInfo?.allowed;
-  if (limitReached === true || allowed === false) {
-    return 100;
   }
   return undefined;
 }
@@ -505,7 +499,7 @@ function resolveCpaQuota(raw: Record<string, unknown>): ResolvedQuotaBase {
   const usagePayload = toRecord(raw.cpa_quota_usage);
   const rateLimit = toRecord(usagePayload?.rate_limit ?? usagePayload?.rateLimit);
   const weeklyWindow = pickCpaWeeklyWindow(rateLimit);
-  let usedPercent = getWindowUsedPercent(weeklyWindow, rateLimit);
+  let usedPercent = getWindowUsedPercent(weeklyWindow);
 
   if (typeof usedPercent !== "number") {
     const directUsed = toOptionalNumber(
