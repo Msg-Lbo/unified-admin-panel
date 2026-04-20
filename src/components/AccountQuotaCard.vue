@@ -65,6 +65,24 @@ function normalizeStatusLabel(status: string): string {
   return status;
 }
 
+function isQuotaExhaustedStatus(status: string): boolean {
+  const normalized = status.trim().toLowerCase();
+  return (
+    normalized.includes("quota_exhausted") ||
+    normalized.includes("usage_limit_reached") ||
+    normalized.includes("insufficient_quota") ||
+    normalized.includes("quota exhausted") ||
+    normalized.includes("insufficient quota")
+  );
+}
+
+function hasClearRemainingQuota(metrics: QuotaCardMetrics): boolean {
+  return (
+    (typeof metrics.usedPercent === "number" && metrics.usedPercent < 99.95) ||
+    (typeof metrics.remainingPercent === "number" && metrics.remainingPercent > 0.05)
+  );
+}
+
 function normalizePlanType(rawType: string): PlanType {
   const value = rawType.trim().toLowerCase();
   if (!value) {
@@ -162,13 +180,12 @@ const statusTone = computed<"ok" | "exhausted" | "error" | "banned" | "disabled"
     return "error";
   }
   if (
-    normalized.includes("quota_exhausted") ||
-    normalized.includes("usage_limit_reached") ||
-    normalized.includes("insufficient_quota") ||
-    normalized.includes("quota exhausted") ||
-    normalized.includes("insufficient quota") ||
+    isQuotaExhaustedStatus(normalized) ||
     normalized.includes("exhausted")
   ) {
+    if (hasClearRemainingQuota(props.metrics)) {
+      return "error";
+    }
     return "exhausted";
   }
   if (
@@ -193,7 +210,11 @@ const statusLabel = computed(() => {
   if (props.metrics.exhausted) {
     return "额度用尽";
   }
-  return normalizeStatusLabel(props.account.status);
+  const normalizedLabel = normalizeStatusLabel(props.account.status);
+  if (normalizedLabel === "额度用尽" && hasClearRemainingQuota(props.metrics)) {
+    return "异常";
+  }
+  return normalizedLabel;
 });
 
 const displayEmail = computed(() => props.account.email?.trim() || "-");

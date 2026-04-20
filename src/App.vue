@@ -844,6 +844,9 @@ function resolveAccountState(account: UnifiedAccount): AccountStateKind {
   if (metrics.exhausted) {
     return "exhausted";
   }
+  const hasClearRemainingQuota =
+    (typeof metrics.usedPercent === "number" && metrics.usedPercent < 99.95) ||
+    (typeof metrics.remainingPercent === "number" && metrics.remainingPercent > 0.05);
 
   if (
     normalized.includes("rate_limited") ||
@@ -871,6 +874,9 @@ function resolveAccountState(account: UnifiedAccount): AccountStateKind {
     normalized.includes("quota exhausted") ||
     normalized.includes("insufficient quota")
   ) {
+    if (hasClearRemainingQuota) {
+      return "error";
+    }
     return "exhausted";
   }
   return "normal";

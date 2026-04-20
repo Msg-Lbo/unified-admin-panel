@@ -222,6 +222,23 @@ const SUB2API_BANNED_HINTS = [
   "forbidden"
 ];
 
+const CLIPROXY_QUOTA_HINTS = [
+  "usage_limit_reached",
+  "usage limit has been reached",
+  "insufficient_quota",
+  "insufficient quota",
+  "quota_exhausted",
+  "quota exhausted",
+  "quota exceeded",
+  "billing_hard_limit",
+  "billing hard limit",
+  "credit balance is too low",
+  "out of credits",
+  "额度用尽",
+  "额度不足",
+  "余额不足"
+];
+
 function pickFirstString(
   ...values: Array<string | number | undefined | null>
 ): string | undefined {
@@ -453,9 +470,7 @@ function normalizeStatus(
   const normalizedMessage = (statusMessage ?? "").toLowerCase();
   if (
     normalizedStatus === "error" &&
-    (normalizedMessage.includes("usage_limit_reached") ||
-      normalizedMessage.includes("usage limit has been reached") ||
-      normalizedMessage.includes("quota"))
+    containsAnyKeyword(normalizedMessage, CLIPROXY_QUOTA_HINTS)
   ) {
     return {
       status: "quota_exhausted",
