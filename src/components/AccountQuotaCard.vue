@@ -34,17 +34,15 @@ function normalizeStatusLabel(status: string): string {
     normalized.includes("usage_limit_reached") ||
     normalized.includes("insufficient_quota") ||
     normalized.includes("quota exhausted") ||
-    normalized.includes("insufficient quota")
-  ) {
-    return "额度用尽";
-  }
-  if (
+    normalized.includes("insufficient quota") ||
     normalized.includes("rate_limited") ||
+    normalized.includes("rate_limit") ||
     normalized.includes("rate limit") ||
+    normalized.includes("rate-limit") ||
     normalized.includes("ratelimited") ||
     normalized.includes("retry")
   ) {
-    return "限流";
+    return "额度用尽";
   }
   if (
     normalized.includes("banned") ||
@@ -72,7 +70,13 @@ function isQuotaExhaustedStatus(status: string): boolean {
     normalized.includes("usage_limit_reached") ||
     normalized.includes("insufficient_quota") ||
     normalized.includes("quota exhausted") ||
-    normalized.includes("insufficient quota")
+    normalized.includes("insufficient quota") ||
+    normalized.includes("rate_limited") ||
+    normalized.includes("rate_limit") ||
+    normalized.includes("rate limit") ||
+    normalized.includes("rate-limit") ||
+    normalized.includes("ratelimited") ||
+    normalized.includes("retry")
   );
 }
 
@@ -170,14 +174,6 @@ const statusTone = computed<"ok" | "exhausted" | "error" | "banned" | "disabled"
     normalized.includes("disabled")
   ) {
     return "disabled";
-  }
-  if (
-    normalized.includes("rate_limited") ||
-    normalized.includes("rate limit") ||
-    normalized.includes("ratelimited") ||
-    normalized.includes("retry")
-  ) {
-    return "error";
   }
   if (
     isQuotaExhaustedStatus(normalized) ||

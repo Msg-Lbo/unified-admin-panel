@@ -6,13 +6,27 @@ interface ProxyRequestPayload {
   data?: unknown;
 }
 
+interface RuntimePlatformConfig {
+  id: "cliproxyapi" | "sub2api";
+  baseUrl?: string;
+  apiKey?: string;
+}
+
 interface AssetFetcher {
   fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
 }
 
 interface Env {
   ASSETS: AssetFetcher;
+  CPA_BASE_URL?: string;
+  CPA_API_KEY?: string;
+  CLIPROXYAPI_BASE_URL?: string;
+  CLIPROXYAPI_API_KEY?: string;
+  SUB2API_BASE_URL?: string;
+  SUB2API_API_KEY?: string;
 }
+
+const RUNTIME_API_KEY_SENTINEL = "__CF_RUNTIME_API_KEY__";
 
 function jsonResponse(status: number, payload: Record<string, unknown>): Response {
   return new Response(JSON.stringify(payload), {
@@ -92,7 +106,75 @@ function buildProxyResponseHeaders(upstream: Headers): Headers {
   return output;
 }
 
-async function handleProxy(request: Request): Promise<Response> {
+function pickEnvText(...values: Array<string | undefined>): string | undefined {
+  for (const value of values) {
+    const normalized = value?.trim();
+    if (normalized) {
+      return normalized;
+    }
+  }
+  return undefined;
+}
+
+function getRuntimePlatforms(env: Env): RuntimePlatformConfig[] {
+  const cpaBaseUrl = pickEnvText(env.CPA_BASE_URL, env.CLIPROXYAPI_BASE_URL);
+  const sub2apiBaseUrl = pickEnvText(env.SUB2API_BASE_URL);
+  return [
+    {
+      id: "cliproxyapi",
+      baseUrl: cpaBaseUrl,
+      apiKey: pickEnvText(env.CPA_API_KEY, env.CLIPROXYAPI_API_KEY)
+        ? RUNTIME_API_KEY_SENTINEL
+        : undefined
+    },
+    {
+      id: "sub2api",
+      baseUrl: sub2apiBaseUrl,
+      apiKey: pickEnvText(env.SUB2API_API_KEY) ? RUNTIME_API_KEY_SENTINEL : undefined
+    }
+  ];
+}
+
+function getRuntimeApiKeyForRequest(
+  url: URL,
+  headers: Headers,
+  env: Env
+): string | undefined {
+  const platform = headers.get("x-uap-platform")?.trim().toLowerCase();
+  if (platform === "cliproxyapi") {
+    return pickEnvText(env.CPA_API_KEY, env.CLIPROXYAPI_API_KEY);
+  }
+  if (platform === "sub2api") {
+    return pickEnvText(env.SUB2API_API_KEY);
+  }
+
+  const cpaBaseUrl = pickEnvText(env.CPA_BASE_URL, env.CLIPROXYAPI_BASE_URL);
+  if (cpaBaseUrl) {
+    try {
+      const parsed = new URL(cpaBaseUrl);
+      if (parsed.origin === url.origin) {
+        return pickEnvText(env.CPA_API_KEY, env.CLIPROXYAPI_API_KEY);
+      }
+    } catch {
+      // Ignore invalid optional runtime config.
+    }
+  }
+
+  const sub2apiBaseUrl = pickEnvText(env.SUB2API_BASE_URL);
+  if (sub2apiBaseUrl) {
+    try {
+      const parsed = new URL(sub2apiBaseUrl);
+      if (parsed.origin === url.origin) {
+        return pickEnvText(env.SUB2API_API_KEY);
+      }
+    } catch {
+      // Ignore invalid optional runtime config.
+    }
+  }
+  return undefined;
+}
+
+async function handleProxy(request: Request, env: Env): Promise<Response> {
   let payload: ProxyRequestPayload;
   try {
     payload = (await request.json()) as ProxyRequestPayload;
@@ -110,6 +192,19 @@ async function handleProxy(request: Request): Promise<Response> {
   appendParams(targetUrl, payload.params);
   const headers = sanitizeHeaders(payload.headers);
   const body = buildBody(method, payload.data);
+  const runtimeApiKey = getRuntimeApiKeyForRequest(targetUrl, headers, env);
+  if (runtimeApiKey) {
+    if (headers.get("authorization") === `Bearer ${RUNTIME_API_KEY_SENTINEL}`) {
+      headers.set("authorization", `Bearer ${runtimeApiKey}`);
+    }
+    if (headers.get("x-api-key") === RUNTIME_API_KEY_SENTINEL) {
+      headers.set("x-api-key", runtimeApiKey);
+    }
+    if (headers.get("x-management-key") === RUNTIME_API_KEY_SENTINEL) {
+      headers.set("x-management-key", runtimeApiKey);
+    }
+  }
+  headers.delete("x-uap-platform");
 
   if (body && !headers.has("content-type")) {
     headers.set("content-type", "application/json; charset=utf-8");
@@ -153,7 +248,13 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === "/api/proxy" && request.method === "POST") {
-      return handleProxy(request);
+      return handleProxy(request, env);
+    }
+
+    if (url.pathname === "/api/config" && request.method === "GET") {
+      return jsonResponse(200, {
+        platforms: getRuntimePlatforms(env)
+      });
     }
 
     const response = await env.ASSETS.fetch(request);

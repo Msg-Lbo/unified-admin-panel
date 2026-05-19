@@ -1,3 +1,5 @@
+export const RUNTIME_API_KEY_SENTINEL = "__CF_RUNTIME_API_KEY__";
+
 export type PlatformKind = "cliproxyapi" | "sub2api";
 
 export interface PlatformConfig {

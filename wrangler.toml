@@ -5,3 +5,7 @@ compatibility_date = "2026-04-11"
 [assets]
 directory = "./dist"
 binding = "ASSETS"
+
+[vars]
+CPA_BASE_URL = "https://cpa.ytb.icu"
+SUB2API_BASE_URL = "https://one.ytb.icu"

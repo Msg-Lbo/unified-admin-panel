@@ -1,10 +1,11 @@
-﻿import axios, { type AxiosRequestConfig, type Method } from "axios";
-import type {
-  AccountDetailResult,
-  PlatformConfig,
-  PlatformFetchResult,
-  PlatformUsageTrend,
-  UnifiedAccount
+﻿import axios, { type AxiosRequestConfig } from "axios";
+import {
+  RUNTIME_API_KEY_SENTINEL,
+  type AccountDetailResult,
+  type PlatformConfig,
+  type PlatformFetchResult,
+  type PlatformUsageTrend,
+  type UnifiedAccount
 } from "../types/platform";
 import { estimateTokenUsageCostUsd } from "../utils/pricing";
 
@@ -204,10 +205,12 @@ const SUB2API_QUOTA_HINTS = [
   "用完"
 ];
 
-const SUB2API_RATE_LIMIT_HINTS = [
+const RATE_LIMIT_HINTS = [
   "rate limit",
   "rate_limited",
   "rate_limit",
+  "rate-limit",
+  "ratelimited",
   "429",
   "too many requests",
   "retry after"
@@ -468,6 +471,12 @@ function normalizeStatus(
   }
   const normalizedStatus = rawStatus?.trim().toLowerCase() || "unknown";
   const normalizedMessage = (statusMessage ?? "").toLowerCase();
+  if (isRateLimitedSignal(normalizedStatus, normalizedMessage)) {
+    return {
+      status: "quota_exhausted",
+      statusDetail: statusMessage
+    };
+  }
   if (
     normalizedStatus === "error" &&
     containsAnyKeyword(normalizedMessage, CLIPROXY_QUOTA_HINTS)
@@ -489,6 +498,19 @@ function containsAnyKeyword(source: string, keywords: string[]): boolean {
   }
   const normalized = source.toLowerCase();
   return keywords.some((keyword) => normalized.includes(keyword));
+}
+
+function isRateLimitedSignal(status: string, message = ""): boolean {
+  const normalizedStatus = status.trim().toLowerCase();
+  const signalText = `${normalizedStatus} ${message}`;
+  return (
+    normalizedStatus.includes("rate_limited") ||
+    normalizedStatus.includes("rate-limit") ||
+    normalizedStatus.includes("rate_limit") ||
+    normalizedStatus.includes("rate limit") ||
+    normalizedStatus === "ratelimited" ||
+    containsAnyKeyword(signalText, RATE_LIMIT_HINTS)
+  );
 }
 
 function hasReachedQuotaLimit(item: Sub2ApiAccount): boolean {
@@ -598,11 +620,8 @@ function normalizeSub2ApiStatus(
     };
   }
 
-  const statusIsRateLimited =
-    normalizedStatus.includes("rate_limited") ||
-    normalizedStatus.includes("rate-limit") ||
-    normalizedStatus === "ratelimited";
-  const rateLimitedByMessage = containsAnyKeyword(messageText, SUB2API_RATE_LIMIT_HINTS);
+  const statusIsRateLimited = isRateLimitedSignal(normalizedStatus);
+  const rateLimitedByMessage = containsAnyKeyword(messageText, RATE_LIMIT_HINTS);
   const rateLimitWindowActive =
     tempUnschedulableActive || overloadActive || rateLimitResetActive;
   const rateLimitedActive =
@@ -614,7 +633,14 @@ function normalizeSub2ApiStatus(
         (Boolean(rateLimitedAt) && rateLimitResetActive)));
   if (rateLimitedActive) {
     return {
-      status: "rate_limited",
+      status: "quota_exhausted",
+      statusDetail
+    };
+  }
+
+  if (statusIsRateLimited) {
+    return {
+      status: "quota_exhausted",
       statusDetail
     };
   }
@@ -790,18 +816,26 @@ function getRequiredApiKey(platform: PlatformConfig): string {
 
 function getCLIProxyHeaders(platform: PlatformConfig): Record<string, string> {
   const apiKey = getRequiredApiKey(platform);
-  return {
+  const headers: Record<string, string> = {
     Authorization: `Bearer ${apiKey}`,
     "X-Management-Key": apiKey
   };
+  if (apiKey === RUNTIME_API_KEY_SENTINEL) {
+    headers["X-UAP-Platform"] = platform.id;
+  }
+  return headers;
 }
 
 function getSub2ApiHeaders(platform: PlatformConfig): Record<string, string> {
   const apiKey = getRequiredApiKey(platform);
-  return {
+  const headers: Record<string, string> = {
     "x-api-key": apiKey,
     Authorization: `Bearer ${apiKey}`
   };
+  if (apiKey === RUNTIME_API_KEY_SENTINEL) {
+    headers["X-UAP-Platform"] = platform.id;
+  }
+  return headers;
 }
 
 function ensurePlatformReady(platform: PlatformConfig): string {
@@ -825,6 +859,13 @@ function shouldPreferProxy(): boolean {
     return true;
   }
   return true;
+}
+
+function hasRuntimeApiKeySentinel(config: AxiosRequestConfig): boolean {
+  const headers = (config.headers ?? {}) as Record<string, unknown>;
+  return Object.values(headers).some((value) =>
+    String(value ?? "").includes(RUNTIME_API_KEY_SENTINEL)
+  );
 }
 
 function isProxyUnavailable(error: unknown): boolean {
@@ -859,6 +900,9 @@ async function requestByProxy<T>(config: AxiosRequestConfig): Promise<T> {
 }
 
 async function requestWithFallback<T>(config: AxiosRequestConfig): Promise<T> {
+  if (hasRuntimeApiKeySentinel(config)) {
+    return requestByProxy<T>(config);
+  }
   if (!shouldPreferProxy()) {
     return requestDirect<T>(config);
   }

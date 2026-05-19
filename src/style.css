@@ -620,6 +620,13 @@ body {
   margin-top: 2px;
 }
 
+.floating-config-modal__hint {
+  margin: 6px 0 0;
+  color: var(--text-subtle);
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
 .floating-config-modal__message {
   margin: 10px 0 0;
   color: var(--text-subtle);

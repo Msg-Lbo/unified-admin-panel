@@ -58,6 +58,23 @@ function normalizePercentageLike(value: number): number {
   return value;
 }
 
+function isLimitExhaustedStatus(status: string): boolean {
+  const normalized = status.trim().toLowerCase();
+  return (
+    normalized.includes("quota_exhausted") ||
+    normalized.includes("usage_limit_reached") ||
+    normalized.includes("insufficient_quota") ||
+    normalized.includes("quota exhausted") ||
+    normalized.includes("insufficient quota") ||
+    normalized.includes("rate_limited") ||
+    normalized.includes("rate_limit") ||
+    normalized.includes("rate limit") ||
+    normalized.includes("rate-limit") ||
+    normalized.includes("ratelimited") ||
+    normalized.includes("retry")
+  );
+}
+
 function formatNumber(value: number): string {
   if (Math.abs(value) >= 1000) {
     return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
@@ -540,12 +557,15 @@ function resolveCpaQuota(raw: Record<string, unknown>): ResolvedQuotaBase {
 }
 
 export function buildAccountQuotaMetrics(account: UnifiedAccount): QuotaCardMetrics {
+  const forceExhausted = isLimitExhaustedStatus(account.status);
   const raw = toRecord(account.raw);
   if (!raw) {
     return {
       totalText: "-",
-      usedText: "-",
-      exhausted: false
+      usedText: forceExhausted ? formatPercent(100) : "-",
+      remainingPercent: forceExhausted ? 0 : undefined,
+      usedPercent: forceExhausted ? 100 : undefined,
+      exhausted: forceExhausted
     };
   }
 
@@ -608,8 +628,9 @@ export function buildAccountQuotaMetrics(account: UnifiedAccount): QuotaCardMetr
     totalText = `${totalText} / ${formatUsd(remainingUsd + (usedUsdValue ?? 0))}`;
   }
 
-  const usedPercent = base.usedPercent;
-  const exhausted = typeof usedPercent === "number" && usedPercent >= 99.95;
+  const usedPercent = forceExhausted ? 100 : base.usedPercent;
+  const remainingPercent = forceExhausted ? 0 : base.remainingPercent;
+  const exhausted = forceExhausted || (typeof usedPercent === "number" && usedPercent >= 99.95);
 
   return {
     totalText,
@@ -619,7 +640,7 @@ export function buildAccountQuotaMetrics(account: UnifiedAccount): QuotaCardMetr
     usedUsdValue,
     totalUsdValue,
     usdQuotaValue,
-    remainingPercent: base.remainingPercent,
+    remainingPercent,
     usedPercent,
     exhausted
   };

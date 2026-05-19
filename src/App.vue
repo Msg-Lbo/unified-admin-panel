@@ -49,6 +49,28 @@ const PLATFORM_KINDS: PlatformKind[] = ["sub2api", "cliproxyapi"];
 const AUTO_REFRESH_ALLOWED_SECONDS = [0, 15, 30, 60] as const;
 const DEFAULT_AUTO_REFRESH_SECONDS = 30;
 
+interface RuntimePlatformConfig {
+  id: PlatformKind;
+  baseUrl?: string;
+  apiKey?: string;
+}
+
+function readEnvText(key: string): string {
+  const env = import.meta.env as Record<string, string | undefined>;
+  return String(env[key] ?? "").trim();
+}
+
+function resolvePlatformEnv(platformId: PlatformKind, key: "BASE_URL" | "API_KEY"): string {
+  const prefixes = platformId === "cliproxyapi" ? ["CPA", "CLIPROXYAPI"] : ["SUB2API"];
+  for (const prefix of prefixes) {
+    const value = readEnvText(`VITE_${prefix}_${key}`);
+    if (value) {
+      return value;
+    }
+  }
+  return "";
+}
+
 const autoRefreshOptions = [
   { label: "自动刷新：关闭", value: 0 },
   { label: "自动刷新：15秒", value: 15 },
@@ -60,15 +82,15 @@ const defaultPlatforms: PlatformConfig[] = [
   {
     id: "cliproxyapi",
     name: "cpa",
-    baseUrl: "",
-    apiKey: "",
+    baseUrl: resolvePlatformEnv("cliproxyapi", "BASE_URL"),
+    apiKey: resolvePlatformEnv("cliproxyapi", "API_KEY"),
     enabled: true
   },
   {
     id: "sub2api",
     name: "sub2api",
-    baseUrl: "",
-    apiKey: "",
+    baseUrl: resolvePlatformEnv("sub2api", "BASE_URL"),
+    apiKey: resolvePlatformEnv("sub2api", "API_KEY"),
     enabled: true
   }
 ];
@@ -86,6 +108,80 @@ const defaultSortSettings: PlatformSortSettings = {
 
 function cloneDefaultPlatforms(): PlatformConfig[] {
   return defaultPlatforms.map((item) => ({ ...item }));
+}
+
+function mergePlatformConfig(
+  target: PlatformConfig,
+  override: PlatformConfig
+): PlatformConfig {
+  const baseUrl = sanitizeBaseUrl(override.baseUrl);
+  const apiKey = override.apiKey.trim();
+  return {
+    ...target,
+    baseUrl: baseUrl || target.baseUrl,
+    apiKey: apiKey || target.apiKey,
+    enabled: override.enabled
+  };
+}
+
+function buildStoredPlatforms(): PlatformConfig[] {
+  const defaults = cloneDefaultPlatforms();
+  return platforms.value.map((platform) => {
+    const defaultPlatform = defaults.find((item) => item.id === platform.id);
+    const baseUrl = sanitizeBaseUrl(platform.baseUrl);
+    const apiKey = platform.apiKey.trim();
+    return {
+      ...platform,
+      baseUrl: baseUrl && baseUrl !== defaultPlatform?.baseUrl ? baseUrl : "",
+      apiKey: apiKey && apiKey !== defaultPlatform?.apiKey ? apiKey : "",
+      enabled: platform.enabled
+    };
+  });
+}
+
+function isRuntimePlatformConfigArray(value: unknown): value is RuntimePlatformConfig[] {
+  if (!Array.isArray(value)) {
+    return false;
+  }
+  return value.every((item) => {
+    if (!item || typeof item !== "object") {
+      return false;
+    }
+    const candidate = item as RuntimePlatformConfig;
+    return (
+      (candidate.id === "cliproxyapi" || candidate.id === "sub2api") &&
+      (typeof candidate.baseUrl === "undefined" || typeof candidate.baseUrl === "string") &&
+      (typeof candidate.apiKey === "undefined" || typeof candidate.apiKey === "string")
+    );
+  });
+}
+
+function applyRuntimePlatformDefaults(runtimePlatforms: RuntimePlatformConfig[]): void {
+  const previousStoredPlatforms = buildStoredPlatforms();
+  for (const runtimePlatform of runtimePlatforms) {
+    const target = defaultPlatforms.find((item) => item.id === runtimePlatform.id);
+    if (!target) {
+      continue;
+    }
+    const baseUrl = sanitizeBaseUrl(runtimePlatform.baseUrl ?? "");
+    const apiKey = runtimePlatform.apiKey?.trim() ?? "";
+    if (baseUrl) {
+      target.baseUrl = baseUrl;
+    }
+    if (apiKey) {
+      target.apiKey = apiKey;
+    }
+  }
+  fixedPlatforms.value = cloneDefaultPlatforms();
+  const defaults = cloneDefaultPlatforms();
+  for (const item of previousStoredPlatforms) {
+    const targetIndex = defaults.findIndex((entry) => entry.id === item.id);
+    if (targetIndex < 0) {
+      continue;
+    }
+    defaults[targetIndex] = mergePlatformConfig(defaults[targetIndex], item);
+  }
+  platforms.value = defaults;
 }
 
 function cloneDefaultSortSettings(): PlatformSortSettings {
@@ -142,13 +238,11 @@ function loadPlatforms(): PlatformConfig[] {
 
     const defaults = cloneDefaultPlatforms();
     for (const item of parsed) {
-      const target = defaults.find((entry) => entry.id === item.id);
-      if (!target) {
+      const targetIndex = defaults.findIndex((entry) => entry.id === item.id);
+      if (targetIndex < 0) {
         continue;
       }
-      target.baseUrl = item.baseUrl;
-      target.apiKey = item.apiKey;
-      target.enabled = item.enabled;
+      defaults[targetIndex] = mergePlatformConfig(defaults[targetIndex], item);
     }
     return defaults;
   } catch {
@@ -276,6 +370,7 @@ const checkMessages = ref<Record<PlatformKind, string>>({
 
 const accounts = ref<UnifiedAccount[]>([]);
 const errors = ref<string[]>([]);
+const fixedPlatforms = ref<PlatformConfig[]>(cloneDefaultPlatforms());
 
 const splitContainerRef = ref<HTMLElement | null>(null);
 const leftGridRef = ref<HTMLElement | null>(null);
@@ -317,7 +412,7 @@ function notify(type: FeedbackType, message: string): void {
 }
 
 function persistPlatforms(): void {
-  localStorage.setItem(PLATFORM_STORAGE_KEY, JSON.stringify(platforms.value));
+  localStorage.setItem(PLATFORM_STORAGE_KEY, JSON.stringify(buildStoredPlatforms()));
 }
 
 function persistSortSettings(): void {
@@ -331,8 +426,27 @@ function saveSettings(options?: { silent?: boolean }): void {
   }
   persistPlatforms();
   persistSortSettings();
+  platforms.value = loadPlatforms();
   if (!options?.silent) {
     notify("success", "配置已保存。");
+  }
+}
+
+async function loadRuntimeConfig(): Promise<void> {
+  try {
+    const response = await fetch("/api/config", {
+      headers: { accept: "application/json" }
+    });
+    if (!response.ok) {
+      return;
+    }
+    const payload = (await response.json()) as Record<string, unknown>;
+    if (!isRuntimePlatformConfigArray(payload.platforms)) {
+      return;
+    }
+    applyRuntimePlatformDefaults(payload.platforms);
+  } catch {
+    // 运行时配置不可用时保留构建期默认值和本地覆盖。
   }
 }
 
@@ -349,7 +463,13 @@ function updatePlatformField(payload: {
     target.enabled = Boolean(payload.value);
     return;
   }
-  target[payload.key] = String(payload.value);
+  const localValue = String(payload.value);
+  if (localValue.trim()) {
+    target[payload.key] = localValue;
+    return;
+  }
+  target[payload.key] =
+    fixedPlatforms.value.find((item) => item.id === payload.platformId)?.[payload.key] ?? "";
 }
 
 function updateSortSetting(payload: {
@@ -848,14 +968,6 @@ function resolveAccountState(account: UnifiedAccount): AccountStateKind {
     (typeof metrics.usedPercent === "number" && metrics.usedPercent < 99.95) ||
     (typeof metrics.remainingPercent === "number" && metrics.remainingPercent > 0.05);
 
-  if (
-    normalized.includes("rate_limited") ||
-    normalized.includes("rate limit") ||
-    normalized.includes("ratelimited") ||
-    normalized.includes("retry")
-  ) {
-    return "error";
-  }
   if (normalized.includes("inactive") || normalized.includes("disabled")) {
     return "disabled";
   }
@@ -872,7 +984,13 @@ function resolveAccountState(account: UnifiedAccount): AccountStateKind {
     normalized.includes("usage_limit_reached") ||
     normalized.includes("insufficient_quota") ||
     normalized.includes("quota exhausted") ||
-    normalized.includes("insufficient quota")
+    normalized.includes("insufficient quota") ||
+    normalized.includes("rate_limited") ||
+    normalized.includes("rate_limit") ||
+    normalized.includes("rate limit") ||
+    normalized.includes("rate-limit") ||
+    normalized.includes("ratelimited") ||
+    normalized.includes("retry")
   ) {
     if (hasClearRemainingQuota) {
       return "error";
@@ -1260,8 +1378,9 @@ watch(isAuthenticated, (value) => {
   }
 });
 
-onMounted(() => {
+onMounted(async () => {
   applyThemeToDocument(themeMode.value);
+  await loadRuntimeConfig();
   if (isAuthenticated.value) {
     void refreshAccounts();
     resetAutoRefreshTimer();
@@ -1490,6 +1609,7 @@ onBeforeUnmount(() => {
       <FloatingConfigModal
         :show="showConfigModal"
         :platforms="platforms"
+        :fixed-platforms="fixedPlatforms"
         :test-loading="testLoading"
         :check-messages="checkMessages"
         :sort-settings="sortSettings"

@@ -12,7 +12,11 @@ import {
   NSpace,
   NSwitch
 } from "naive-ui";
-import type { PlatformConfig, PlatformKind } from "../types/platform";
+import {
+  RUNTIME_API_KEY_SENTINEL,
+  type PlatformConfig,
+  type PlatformKind
+} from "../types/platform";
 import type {
   PlatformSortSettings,
   SortDirection,
@@ -20,10 +24,12 @@ import type {
 } from "../types/viewSettings";
 
 type EditableKey = "baseUrl" | "apiKey" | "enabled";
+type TextConfigKey = "baseUrl" | "apiKey";
 
 const props = defineProps<{
   show: boolean;
   platforms: PlatformConfig[];
+  fixedPlatforms: PlatformConfig[];
   testLoading: Record<PlatformKind, boolean>;
   checkMessages: Record<PlatformKind, string>;
   sortSettings: PlatformSortSettings;
@@ -85,6 +91,30 @@ function updateSortDirection(platformId: PlatformKind, value: string): void {
   });
 }
 
+function getFixedPlatform(platformId: PlatformKind): PlatformConfig | undefined {
+  return props.fixedPlatforms.find((item) => item.id === platformId);
+}
+
+function getLocalDisplayValue(platform: PlatformConfig, key: TextConfigKey): string {
+  const value = platform[key].trim();
+  const fixedValue = getFixedPlatform(platform.id)?.[key].trim() ?? "";
+  if (!value || value === fixedValue) {
+    return "";
+  }
+  if (key === "apiKey" && value === RUNTIME_API_KEY_SENTINEL) {
+    return "";
+  }
+  return value;
+}
+
+function hasLocalOverride(platform: PlatformConfig, key: TextConfigKey): boolean {
+  return getLocalDisplayValue(platform, key).length > 0;
+}
+
+function hasFixedValue(platform: PlatformConfig, key: TextConfigKey): boolean {
+  return Boolean(getFixedPlatform(platform.id)?.[key].trim());
+}
+
 function saveAndClose(): void {
   emit("save-settings");
   emit("update:show", false);
@@ -111,20 +141,44 @@ function saveAndClose(): void {
             <NForm label-placement="top">
               <NFormItem label="平台地址">
                 <NInput
-                  :value="platform.baseUrl"
-                  placeholder="https://example.com"
+                  :value="getLocalDisplayValue(platform, 'baseUrl')"
+                  placeholder="留空则使用固定平台地址"
                   @update:value="(value) => updateField(platform.id, 'baseUrl', value)"
                 />
+                <p
+                  v-if="hasLocalOverride(platform, 'baseUrl')"
+                  class="floating-config-modal__hint"
+                >
+                  当前使用本地覆盖值；清空后保存会回到固定平台地址。
+                </p>
+                <p
+                  v-else-if="hasFixedValue(platform, 'baseUrl')"
+                  class="floating-config-modal__hint"
+                >
+                  当前使用固定平台地址，可在此填写本地覆盖值。
+                </p>
               </NFormItem>
 
               <NFormItem label="API Key">
                 <NInput
-                  :value="platform.apiKey"
+                  :value="getLocalDisplayValue(platform, 'apiKey')"
                   type="password"
                   show-password-on="click"
-                  placeholder="请输入 API Key"
+                  placeholder="留空则使用固定 API Key"
                   @update:value="(value) => updateField(platform.id, 'apiKey', value)"
                 />
+                <p
+                  v-if="hasLocalOverride(platform, 'apiKey')"
+                  class="floating-config-modal__hint"
+                >
+                  当前使用本地覆盖值；清空后保存会回到固定 API Key。
+                </p>
+                <p
+                  v-else-if="hasFixedValue(platform, 'apiKey')"
+                  class="floating-config-modal__hint"
+                >
+                  当前使用固定 API Key，可在此填写本地覆盖值。
+                </p>
               </NFormItem>
 
               <NFormItem label="卡片排序字段">

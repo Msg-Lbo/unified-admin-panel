@@ -6,6 +6,17 @@ interface ProxyRequestPayload {
   data?: unknown;
 }
 
+interface Env {
+  CPA_BASE_URL?: string;
+  CPA_API_KEY?: string;
+  CLIPROXYAPI_BASE_URL?: string;
+  CLIPROXYAPI_API_KEY?: string;
+  SUB2API_BASE_URL?: string;
+  SUB2API_API_KEY?: string;
+}
+
+const RUNTIME_API_KEY_SENTINEL = "__CF_RUNTIME_API_KEY__";
+
 function isSafeTarget(url: string): boolean {
   try {
     const parsed = new URL(url);
@@ -77,6 +88,55 @@ function buildResponseHeaders(upstream: Headers): Headers {
   return output;
 }
 
+function pickEnvText(...values: Array<string | undefined>): string | undefined {
+  for (const value of values) {
+    const normalized = value?.trim();
+    if (normalized) {
+      return normalized;
+    }
+  }
+  return undefined;
+}
+
+function getRuntimeApiKeyForRequest(
+  url: URL,
+  headers: Headers,
+  env: Env
+): string | undefined {
+  const platform = headers.get("x-uap-platform")?.trim().toLowerCase();
+  if (platform === "cliproxyapi") {
+    return pickEnvText(env.CPA_API_KEY, env.CLIPROXYAPI_API_KEY);
+  }
+  if (platform === "sub2api") {
+    return pickEnvText(env.SUB2API_API_KEY);
+  }
+
+  const cpaBaseUrl = pickEnvText(env.CPA_BASE_URL, env.CLIPROXYAPI_BASE_URL);
+  if (cpaBaseUrl) {
+    try {
+      const parsed = new URL(cpaBaseUrl);
+      if (parsed.origin === url.origin) {
+        return pickEnvText(env.CPA_API_KEY, env.CLIPROXYAPI_API_KEY);
+      }
+    } catch {
+      // Ignore invalid optional runtime config.
+    }
+  }
+
+  const sub2apiBaseUrl = pickEnvText(env.SUB2API_BASE_URL);
+  if (sub2apiBaseUrl) {
+    try {
+      const parsed = new URL(sub2apiBaseUrl);
+      if (parsed.origin === url.origin) {
+        return pickEnvText(env.SUB2API_API_KEY);
+      }
+    } catch {
+      // Ignore invalid optional runtime config.
+    }
+  }
+  return undefined;
+}
+
 export const onRequestPost: PagesFunction = async (context) => {
   let payload: ProxyRequestPayload;
   try {
@@ -107,6 +167,19 @@ export const onRequestPost: PagesFunction = async (context) => {
   appendParams(targetUrl, payload.params);
   const headers = sanitizeHeaders(payload.headers);
   const body = buildBody(method, payload.data);
+  const runtimeApiKey = getRuntimeApiKeyForRequest(targetUrl, headers, context.env as Env);
+  if (runtimeApiKey) {
+    if (headers.get("authorization") === `Bearer ${RUNTIME_API_KEY_SENTINEL}`) {
+      headers.set("authorization", `Bearer ${runtimeApiKey}`);
+    }
+    if (headers.get("x-api-key") === RUNTIME_API_KEY_SENTINEL) {
+      headers.set("x-api-key", runtimeApiKey);
+    }
+    if (headers.get("x-management-key") === RUNTIME_API_KEY_SENTINEL) {
+      headers.set("x-management-key", runtimeApiKey);
+    }
+  }
+  headers.delete("x-uap-platform");
 
   if (body && !headers.has("content-type")) {
     headers.set("content-type", "application/json; charset=utf-8");

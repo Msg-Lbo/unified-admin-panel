@@ -9,8 +9,8 @@ Vue 3 + TypeScript + Naive UI admin panel for unified account visibility and man
 
 - Theme switch (`light` / `dark`) with local persistence
 - Full-screen dashboard layout with fixed left navigation
-- Platform config panel (base URL + API key + enabled)
-- API key stored in browser `localStorage` (no redeploy required when key changes)
+- Platform config panel (base URL + API key + enabled), with local values overriding fixed defaults
+- API key can come from Cloudflare environment variables; local overrides are still stored in browser `localStorage`
 - Built-in same-origin proxy endpoint (`/api/proxy`) for CORS-safe API calls (Cloudflare Pages Functions + Vite dev middleware)
 - Per-platform connection test
 - Unified account table with:
@@ -86,6 +86,13 @@ npm run preview
 npm run build
 npx wrangler pages deploy dist --project-name unified-admin-panel
 ```
+
+Optional fixed platform config can be set in Cloudflare environment variables:
+
+- `CPA_BASE_URL` / `CPA_API_KEY` for `CLIProxyAPI` (`CLIPROXYAPI_BASE_URL` / `CLIPROXYAPI_API_KEY` also supported)
+- `SUB2API_BASE_URL` / `SUB2API_API_KEY` for `sub2api`
+
+The config modal only writes local overrides. If a local value is empty, the app falls back to these fixed values.
 
 ## Notes
 
