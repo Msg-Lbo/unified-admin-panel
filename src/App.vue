@@ -16,12 +16,20 @@ import {
   NSpace,
   zhCN
 } from "naive-ui";
+import AccountJsonModal from "./components/AccountJsonModal.vue";
+import AccountManageModals from "./components/AccountManageModals.vue";
 import AccountQuotaCard from "./components/AccountQuotaCard.vue";
 import FloatingConfigModal from "./components/FloatingConfigModal.vue";
 import {
+  batchRenameAccountsToEmail,
+  batchSetAccountsEnabled,
+  batchUpdateAccountFields,
   fetchAccountsForPlatform,
   fetchUnifiedAccounts,
-  sanitizeBaseUrl
+  renameAccountName,
+  resolveAccountEmail,
+  sanitizeBaseUrl,
+  setAccountEnabled
 } from "./services/platformClients";
 import type { PlatformConfig, PlatformKind, UnifiedAccount } from "./types/platform";
 import type {
@@ -31,6 +39,7 @@ import type {
 } from "./types/viewSettings";
 import {
   buildAccountQuotaMetrics,
+  isUnknownPlanAccount,
   type QuotaCardMetrics
 } from "./utils/quotaCard";
 
@@ -345,10 +354,6 @@ const themeMode = ref<"light" | "dark">(loadThemeMode());
 const autoRefreshSeconds = ref<number>(loadAutoRefreshSeconds());
 const splitRatio = ref<number>(loadSplitRatio());
 const currentYear = new Date().getFullYear();
-const markSub2apiHighest = ref(true);
-const markSub2apiLowest = ref(true);
-const markCpaHighest = ref(true);
-const markCpaLowest = ref(true);
 const isAuthenticated = ref(loadAuthSession());
 const loginPassword = ref("");
 const loginToken = ref("");
@@ -357,6 +362,13 @@ const loginError = ref("");
 const loading = ref(false);
 const refreshing = ref(false);
 const showConfigModal = ref(false);
+const selectionMode = ref(false);
+const selectedUidSet = ref<Set<string>>(new Set());
+const showBatchEditModal = ref(false);
+const showRenameModal = ref(false);
+const renameMode = ref<"single" | "batch">("single");
+const renameTargetAccounts = ref<UnifiedAccount[]>([]);
+const manageSubmitting = ref(false);
 const isDraggingDivider = ref(false);
 
 const testLoading = ref<Record<PlatformKind, boolean>>({
@@ -379,6 +391,8 @@ const contextMenuVisible = ref(false);
 const contextMenuX = ref(0);
 const contextMenuY = ref(0);
 const contextMenuAccount = ref<UnifiedAccount | null>(null);
+const showJsonModal = ref(false);
+const jsonViewAccount = ref<UnifiedAccount | null>(null);
 const singleRefreshLoadingUid = ref<string | null>(null);
 let splitFlipFrame: number | null = null;
 const flipAnimationMap = new WeakMap<HTMLElement, Animation>();
@@ -513,11 +527,17 @@ function detectErrorPlatforms(errorMessages: string[]): Set<PlatformKind> {
 }
 
 function sortAccountsByDefault(list: UnifiedAccount[]): UnifiedAccount[] {
-  return [...list].sort(
-    (a, b) =>
+  return [...list].sort((a, b) => {
+    const aUnknown = isUnknownPlanAccount(a);
+    const bUnknown = isUnknownPlanAccount(b);
+    if (aUnknown !== bUnknown) {
+      return aUnknown ? 1 : -1;
+    }
+    return (
       a.platformName.localeCompare(b.platformName) ||
       a.name.localeCompare(b.name)
-  );
+    );
+  });
 }
 
 function groupAccountsByPlatform(
@@ -566,7 +586,10 @@ function mergeAccountsWithFallback(
   return sortAccountsByDefault(merged);
 }
 
-async function refreshAccounts(options?: { silent?: boolean }): Promise<void> {
+async function refreshAccounts(options?: {
+  silent?: boolean;
+  forceRefresh?: boolean;
+}): Promise<void> {
   if (refreshing.value) {
     return;
   }
@@ -576,7 +599,9 @@ async function refreshAccounts(options?: { silent?: boolean }): Promise<void> {
     loading.value = true;
   }
   try {
-    const result = await fetchUnifiedAccounts(platforms.value);
+    const result = await fetchUnifiedAccounts(platforms.value, {
+      forceRefresh: options?.forceRefresh ?? true
+    });
     const mergedAccounts = mergeAccountsWithFallback(result.accounts, result.errors);
     const shouldKeepOldSnapshot =
       mergedAccounts.length === 0 &&
@@ -606,7 +631,7 @@ async function testConnection(platformId: PlatformKind): Promise<void> {
   saveSettings({ silent: true });
   testLoading.value[platformId] = true;
   checkMessages.value[platformId] = "";
-  const result = await fetchAccountsForPlatform(platform);
+  const result = await fetchAccountsForPlatform(platform, { forceRefresh: true });
   checkMessages.value[platformId] = result.error
     ? result.error
     : `已拉取 ${result.accounts.length} 条账号记录。`;
@@ -791,7 +816,7 @@ async function refreshSingleAccount(account: UnifiedAccount): Promise<void> {
   saveSettings({ silent: true });
   singleRefreshLoadingUid.value = account.uid;
   try {
-    const result = await fetchAccountsForPlatform(platform);
+    const result = await fetchAccountsForPlatform(platform, { forceRefresh: true });
     if (result.error) {
       throw new Error(result.error);
     }
@@ -881,74 +906,6 @@ function getMetrics(account: UnifiedAccount): QuotaCardMetrics {
   );
 }
 
-function formatQuotaValue(value?: number): string {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return "-";
-  }
-  if (Math.abs(value) >= 1000) {
-    return `$${value.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
-  }
-  return `$${value.toFixed(2)}`;
-}
-
-function summarizeQuotaTotals(list: UnifiedAccount[]): {
-  count: number;
-  max?: number;
-  min?: number;
-  avg?: number;
-} {
-  const totals = list
-    .map((account) => getMetrics(account).usdQuotaValue)
-    .filter(
-      (value): value is number =>
-        typeof value === "number" && Number.isFinite(value) && value > 0
-    );
-  if (!totals.length) {
-    return {
-      count: 0,
-      max: undefined,
-      min: undefined,
-      avg: undefined
-    };
-  }
-  return {
-    count: totals.length,
-    max: Math.max(...totals),
-    min: Math.min(...totals),
-    avg: totals.reduce((sum, value) => sum + value, 0) / totals.length
-  };
-}
-
-function buildQuotaMarkUidSet(
-  list: UnifiedAccount[],
-  mode: "highest" | "lowest"
-): Set<string> {
-  const candidates = list
-    .map((account) => ({
-      uid: account.uid,
-      quota: getMetrics(account).usdQuotaValue
-    }))
-    .filter(
-      (item): item is { uid: string; quota: number } =>
-        typeof item.quota === "number" && Number.isFinite(item.quota) && item.quota > 0
-    );
-
-  if (!candidates.length) {
-    return new Set<string>();
-  }
-
-  const targetValue =
-    mode === "highest"
-      ? Math.max(...candidates.map((item) => item.quota))
-      : Math.min(...candidates.map((item) => item.quota));
-
-  return new Set(
-    candidates
-      .filter((item) => Math.abs(item.quota - targetValue) < Number.EPSILON)
-      .map((item) => item.uid)
-  );
-}
-
 function resolveAccountState(account: UnifiedAccount): AccountStateKind {
   const normalized = account.status.trim().toLowerCase();
   if (
@@ -1026,7 +983,7 @@ function getSortValue(
     return account.priority;
   }
   if (field === "totalQuota") {
-    return metrics.totalValue;
+    return metrics.usedUsdValue ?? metrics.usedValue;
   }
   if (field === "usedQuota") {
     return metrics.usedValue;
@@ -1047,6 +1004,12 @@ function sortPlatformAccounts(
 ): UnifiedAccount[] {
   const factor = rule.direction === "asc" ? 1 : -1;
   return [...list].sort((a, b) => {
+    const aUnknown = isUnknownPlanAccount(a);
+    const bUnknown = isUnknownPlanAccount(b);
+    if (aUnknown !== bUnknown) {
+      return aUnknown ? 1 : -1;
+    }
+
     const aValue = getSortValue(a, rule.field);
     const bValue = getSortValue(b, rule.field);
     const aMissing = typeof aValue === "undefined";
@@ -1084,35 +1047,221 @@ function sortPlatformAccounts(
   });
 }
 
+function isPlatformVisible(platformId: PlatformKind): boolean {
+  return platforms.value.find((item) => item.id === platformId)?.enabled ?? true;
+}
+
+const sub2apiVisible = computed(() => isPlatformVisible("sub2api"));
+const cpaVisible = computed(() => isPlatformVisible("cliproxyapi"));
+const visiblePaneCount = computed(() => Number(sub2apiVisible.value) + Number(cpaVisible.value));
+
 const sub2apiAccounts = computed(() => {
+  if (!sub2apiVisible.value) {
+    return [];
+  }
   const list = accounts.value.filter((item) => item.platform === "sub2api");
   return sortPlatformAccounts(list, sortSettings.value.sub2api);
 });
 
 const cpaAccounts = computed(() => {
+  if (!cpaVisible.value) {
+    return [];
+  }
   const list = accounts.value.filter((item) => item.platform === "cliproxyapi");
   return sortPlatformAccounts(list, sortSettings.value.cliproxyapi);
 });
 
+const selectedAccounts = computed(() =>
+  accounts.value.filter((item) => selectedUidSet.value.has(item.uid))
+);
+
+const selectedCount = computed(() => selectedUidSet.value.size);
+
+function isAccountSelected(uid: string): boolean {
+  return selectedUidSet.value.has(uid);
+}
+
+function toggleAccountSelection(uid: string): void {
+  const next = new Set(selectedUidSet.value);
+  if (next.has(uid)) {
+    next.delete(uid);
+  } else {
+    next.add(uid);
+  }
+  selectedUidSet.value = next;
+}
+
+function clearAccountSelection(): void {
+  selectedUidSet.value = new Set();
+}
+
+function selectAccountsByPlatform(platformId: PlatformKind): void {
+  const list = platformId === "sub2api" ? sub2apiAccounts.value : cpaAccounts.value;
+  const next = new Set(selectedUidSet.value);
+  for (const account of list) {
+    next.add(account.uid);
+  }
+  selectedUidSet.value = next;
+}
+
+function toggleSelectionMode(): void {
+  selectionMode.value = !selectionMode.value;
+  if (!selectionMode.value) {
+    clearAccountSelection();
+  }
+}
+
+function requireSamePlatformSelection(): PlatformKind | null {
+  const selected = selectedAccounts.value;
+  if (!selected.length) {
+    notify("warning", "请先选择账号。");
+    return null;
+  }
+  const platform = selected[0].platform;
+  if (selected.some((item) => item.platform !== platform)) {
+    notify("warning", "批量操作仅支持同一平台的账号。");
+    return null;
+  }
+  return platform;
+}
+
+function openBatchEditModal(): void {
+  const platform = requireSamePlatformSelection();
+  if (!platform) {
+    return;
+  }
+  showBatchEditModal.value = true;
+}
+
+function openBatchRenameModal(): void {
+  const platform = requireSamePlatformSelection();
+  if (!platform) {
+    return;
+  }
+  if (platform !== "sub2api") {
+    notify("warning", "批量邮箱重命名仅支持 Sub2API 账号。");
+    return;
+  }
+  renameMode.value = "batch";
+  renameTargetAccounts.value = [...selectedAccounts.value];
+  showRenameModal.value = true;
+}
+
+function openSingleRenameModal(account: UnifiedAccount): void {
+  renameMode.value = "single";
+  renameTargetAccounts.value = [account];
+  showRenameModal.value = true;
+}
+
+function openSingleEditModal(account: UnifiedAccount): void {
+  clearAccountSelection();
+  selectedUidSet.value = new Set([account.uid]);
+  showBatchEditModal.value = true;
+}
+
+async function applyBatchEdit(payload: {
+  priority?: number;
+  note?: string;
+  schedulable?: boolean;
+}): Promise<void> {
+  const platformId = requireSamePlatformSelection();
+  if (!platformId) {
+    return;
+  }
+  const platform = getPlatformConfig(platformId);
+  const targets = selectedAccounts.value;
+  manageSubmitting.value = true;
+  try {
+    if (typeof payload.schedulable === "boolean") {
+      await batchSetAccountsEnabled(platform, targets, payload.schedulable);
+    }
+    await batchUpdateAccountFields(platform, targets, payload);
+    notify("success", `已更新 ${targets.length} 个账号。`);
+    showBatchEditModal.value = false;
+    clearAccountSelection();
+    await refreshAccounts({ silent: true });
+  } catch (error) {
+    notify("error", parseErrorMessage(error));
+  } finally {
+    manageSubmitting.value = false;
+  }
+}
+
+async function applyRename(payload: { name: string }): Promise<void> {
+  const targets = renameTargetAccounts.value;
+  if (!targets.length) {
+    return;
+  }
+  const platform = getPlatformConfig(targets[0].platform);
+  manageSubmitting.value = true;
+  try {
+    if (renameMode.value === "batch") {
+      const result = await batchRenameAccountsToEmail(platform, targets);
+      notify(
+        "success",
+        `批量重命名完成：成功 ${result.renamed} 个，跳过 ${result.skipped} 个。`
+      );
+    } else {
+      await renameAccountName(platform, targets[0], payload.name);
+      notify("success", "账号已重命名。");
+    }
+    showRenameModal.value = false;
+    clearAccountSelection();
+    await refreshAccounts({ silent: true });
+  } catch (error) {
+    notify("error", parseErrorMessage(error));
+  } finally {
+    manageSubmitting.value = false;
+  }
+}
+
+async function handleBatchEnable(enabled: boolean): Promise<void> {
+  const platformId = requireSamePlatformSelection();
+  if (!platformId) {
+    return;
+  }
+  manageSubmitting.value = true;
+  try {
+    await batchSetAccountsEnabled(
+      getPlatformConfig(platformId),
+      selectedAccounts.value,
+      enabled
+    );
+    notify("success", enabled ? "已批量启用。" : "已批量停用。");
+    clearAccountSelection();
+    await refreshAccounts({ silent: true });
+  } catch (error) {
+    notify("error", parseErrorMessage(error));
+  } finally {
+    manageSubmitting.value = false;
+  }
+}
+
+async function handleToggleAccountEnabled(account: UnifiedAccount): Promise<void> {
+  const normalized = account.status.trim().toLowerCase();
+  const enabled = normalized.includes("inactive") || normalized.includes("disabled")
+    ? true
+    : false;
+  try {
+    await setAccountEnabled(getPlatformConfig(account.platform), account, enabled);
+    notify("success", enabled ? "账号已启用。" : "账号已停用。");
+    await refreshAccounts({ silent: true });
+  } catch (error) {
+    notify("error", parseErrorMessage(error));
+  }
+}
+
 const sub2apiStateSummary = computed(() => summarizeAccountStates(sub2apiAccounts.value));
 const cpaStateSummary = computed(() => summarizeAccountStates(cpaAccounts.value));
-const sub2apiQuotaSummary = computed(() => summarizeQuotaTotals(sub2apiAccounts.value));
-const cpaQuotaSummary = computed(() => summarizeQuotaTotals(cpaAccounts.value));
-const sub2apiHighestUidSet = computed(() =>
-  buildQuotaMarkUidSet(sub2apiAccounts.value, "highest")
-);
-const sub2apiLowestUidSet = computed(() =>
-  buildQuotaMarkUidSet(sub2apiAccounts.value, "lowest")
-);
-const cpaHighestUidSet = computed(() => buildQuotaMarkUidSet(cpaAccounts.value, "highest"));
-const cpaLowestUidSet = computed(() => buildQuotaMarkUidSet(cpaAccounts.value, "lowest"));
-
 const contextMenuOptions = computed(() => {
   const account = contextMenuAccount.value;
-  const hasEmail = Boolean(account?.email?.trim());
+  const hasEmail = Boolean(account && resolveAccountEmail(account));
   const hasAccessToken = Boolean(account && resolveAccessToken(account));
   const refreshingCurrent =
     Boolean(account) && singleRefreshLoadingUid.value === account?.uid;
+  const normalizedStatus = account?.status.trim().toLowerCase() ?? "";
+  const isDisabled =
+    normalizedStatus.includes("inactive") || normalizedStatus.includes("disabled");
 
   return [
     {
@@ -1126,8 +1275,29 @@ const contextMenuOptions = computed(() => {
       disabled: !hasAccessToken
     },
     {
+      label: "查看 JSON",
+      key: "view-json"
+    },
+    {
       type: "divider",
-      key: "divider"
+      key: "divider-actions"
+    },
+    {
+      label: "重命名",
+      key: "rename-account",
+      disabled: account?.platform !== "sub2api"
+    },
+    {
+      label: "编辑账号",
+      key: "edit-account"
+    },
+    {
+      label: isDisabled ? "启用账号" : "停用账号",
+      key: "toggle-enabled"
+    },
+    {
+      type: "divider",
+      key: "divider-refresh"
     },
     {
       label: refreshingCurrent ? "刷新中..." : "刷新该账号",
@@ -1145,11 +1315,28 @@ async function handleContextMenuSelect(key: string | number): Promise<void> {
   }
 
   if (key === "copy-email") {
-    await handleCopyEmail(account.email ?? "");
+    await handleCopyEmail(resolveAccountEmail(account) ?? "");
     return;
   }
   if (key === "copy-access-token") {
     await handleCopyAccessToken(account);
+    return;
+  }
+  if (key === "view-json") {
+    jsonViewAccount.value = account;
+    showJsonModal.value = true;
+    return;
+  }
+  if (key === "rename-account") {
+    openSingleRenameModal(account);
+    return;
+  }
+  if (key === "edit-account") {
+    openSingleEditModal(account);
+    return;
+  }
+  if (key === "toggle-enabled") {
+    await handleToggleAccountEnabled(account);
     return;
   }
   if (key === "refresh-account") {
@@ -1157,19 +1344,31 @@ async function handleContextMenuSelect(key: string | number): Promise<void> {
   }
 }
 
-const leftPaneStyle = computed(() => ({
-  flexBasis: `${splitRatio.value}%`
-}));
-const rightPaneStyle = computed(() => ({
-  flexBasis: `${100 - splitRatio.value}%`
-}));
+const leftPaneStyle = computed(() => {
+  if (visiblePaneCount.value <= 1) {
+    return { flex: "1 1 auto" };
+  }
+  if (sub2apiVisible.value && !cpaVisible.value) {
+    return { flex: "1 1 auto" };
+  }
+  return { flexBasis: `${splitRatio.value}%` };
+});
+const rightPaneStyle = computed(() => {
+  if (visiblePaneCount.value <= 1) {
+    return { flex: "1 1 auto" };
+  }
+  if (cpaVisible.value && !sub2apiVisible.value) {
+    return { flex: "1 1 auto" };
+  }
+  return { flexBasis: `${100 - splitRatio.value}%` };
+});
 
 function captureCardPositions(container: HTMLElement | null): Map<string, DOMRect> {
   const map = new Map<string, DOMRect>();
   if (!container) {
     return map;
   }
-  const cards = container.querySelectorAll<HTMLElement>(".account-card[data-uid]");
+  const cards = container.querySelectorAll<HTMLElement>(".account-row[data-uid]");
   for (const card of cards) {
     const uid = card.dataset.uid;
     if (!uid) {
@@ -1188,7 +1387,7 @@ function playFlipForContainer(
   if (!container || !previousPositions.size) {
     return;
   }
-  const cards = container.querySelectorAll<HTMLElement>(".account-card[data-uid]");
+  const cards = container.querySelectorAll<HTMLElement>(".account-row[data-uid]");
   for (const card of cards) {
     const uid = card.dataset.uid;
     if (!uid) {
@@ -1349,7 +1548,7 @@ function resetAutoRefreshTimer(): void {
     return;
   }
   autoRefreshTimer = setInterval(() => {
-    void refreshAccounts({ silent: true });
+    void refreshAccounts({ silent: true, forceRefresh: false });
   }, autoRefreshSeconds.value * 1000);
 }
 
@@ -1414,10 +1613,17 @@ onBeforeUnmount(() => {
       <header class="app-toolbar">
         <div class="app-toolbar__title">
           <h1>账号额度面板</h1>
-          <p>左侧 sub2api，右侧 cpa，卡片按配置规则排序</p>
+          <p>可在配置中心开关 Sub2API / CPA 模块；卡片支持批量选择与官方 API 编辑</p>
         </div>
         <div class="app-toolbar__actions">
           <NSpace align="center" wrap>
+            <NButton
+              :type="selectionMode ? 'primary' : 'default'"
+              tertiary
+              @click="toggleSelectionMode"
+            >
+              {{ selectionMode ? "退出批量" : "批量管理" }}
+            </NButton>
             <NSelect
               :value="autoRefreshSeconds"
               :options="autoRefreshOptions"
@@ -1433,7 +1639,7 @@ onBeforeUnmount(() => {
             <NButton tertiary @click="logout">退出登录</NButton>
           </NSpace>
           <p class="app-toolbar__quota-tip">
-            账号总额度根据已使用额度+官方计费来计算,仅供参考
+            用量以 Sub2API 官方统计为准，仅展示已用比例与实际费用，不再推算总额度
           </p>
         </div>
       </header>
@@ -1442,25 +1648,46 @@ onBeforeUnmount(() => {
         {{ errors[0] }}
       </p>
 
+      <div v-if="selectionMode" class="batch-toolbar">
+        <span class="batch-toolbar__meta">已选 {{ selectedCount }} 个账号</span>
+        <NSpace wrap>
+          <NButton size="small" @click="selectAccountsByPlatform('sub2api')" :disabled="!sub2apiVisible">
+            全选 Sub2API
+          </NButton>
+          <NButton size="small" @click="selectAccountsByPlatform('cliproxyapi')" :disabled="!cpaVisible">
+            全选 CPA
+          </NButton>
+          <NButton size="small" :disabled="!selectedCount" @click="clearAccountSelection">
+            清空选择
+          </NButton>
+          <NButton size="small" :disabled="!selectedCount" @click="openBatchEditModal">
+            批量编辑
+          </NButton>
+          <NButton size="small" :disabled="!selectedCount" @click="handleBatchEnable(true)">
+            批量启用
+          </NButton>
+          <NButton size="small" :disabled="!selectedCount" @click="handleBatchEnable(false)">
+            批量停用
+          </NButton>
+          <NButton size="small" :disabled="!selectedCount" @click="openBatchRenameModal">
+            批量重命名(邮箱)
+          </NButton>
+        </NSpace>
+      </div>
+
       <main
+        v-if="visiblePaneCount > 0"
         ref="splitContainerRef"
         class="account-split"
-        :class="{ 'account-split--dragging': isDraggingDivider }"
+        :class="{
+          'account-split--dragging': isDraggingDivider,
+          'account-split--single-pane': visiblePaneCount === 1
+        }"
       >
-        <section class="platform-pane" :style="leftPaneStyle">
+        <section v-if="sub2apiVisible" class="platform-pane" :style="leftPaneStyle">
           <div class="platform-pane__head">
             <div class="platform-pane__head-left">
               <h2>sub2api</h2>
-              <div class="platform-pane__switches">
-                <label class="platform-pane__switch-item">
-                  <NSwitch v-model:value="markSub2apiHighest" size="small" />
-                  <span>标记最高</span>
-                </label>
-                <label class="platform-pane__switch-item">
-                  <NSwitch v-model:value="markSub2apiLowest" size="small" />
-                  <span>标记最低</span>
-                </label>
-              </div>
             </div>
             <div class="platform-pane__head-meta">
               <span class="platform-pane__total">{{ sub2apiAccounts.length }} 个账号</span>
@@ -1471,25 +1698,21 @@ onBeforeUnmount(() => {
                 <span class="status-chip status-chip--disabled">停用 {{ sub2apiStateSummary.disabled }}</span>
                 <span class="status-chip status-chip--error">异常 {{ sub2apiStateSummary.error }}</span>
               </div>
-              <div class="platform-pane__quota-list">
-                <span class="quota-chip">高 {{ formatQuotaValue(sub2apiQuotaSummary.max) }}</span>
-                <span class="quota-chip">低 {{ formatQuotaValue(sub2apiQuotaSummary.min) }}</span>
-                <span class="quota-chip">均 {{ formatQuotaValue(sub2apiQuotaSummary.avg) }}</span>
-              </div>
             </div>
           </div>
           <NScrollbar class="pane-scroll">
-            <div ref="leftGridRef" class="card-grid">
+            <div ref="leftGridRef" class="account-list">
               <AccountQuotaCard
                 v-for="account in sub2apiAccounts"
                 :key="account.uid"
                 :data-uid="account.uid"
                 :account="account"
                 :metrics="getMetrics(account)"
-                :mark-highest="markSub2apiHighest && sub2apiHighestUidSet.has(account.uid)"
-                :mark-lowest="markSub2apiLowest && sub2apiLowestUidSet.has(account.uid)"
+                :selection-mode="selectionMode"
+                :selected="isAccountSelected(account.uid)"
                 @copy-email="handleCopyEmail"
                 @open-context-menu="openContextMenu"
+                @toggle-select="toggleAccountSelection"
               />
               <p v-if="!sub2apiAccounts.length" class="pane-empty">暂无账号</p>
             </div>
@@ -1497,6 +1720,7 @@ onBeforeUnmount(() => {
         </section>
 
         <div
+          v-if="sub2apiVisible && cpaVisible"
           class="split-divider"
           role="separator"
           aria-orientation="vertical"
@@ -1508,20 +1732,10 @@ onBeforeUnmount(() => {
           <span class="split-divider__dot" />
         </div>
 
-        <section class="platform-pane" :style="rightPaneStyle">
+        <section v-if="cpaVisible" class="platform-pane" :style="rightPaneStyle">
           <div class="platform-pane__head">
             <div class="platform-pane__head-left">
               <h2>cpa</h2>
-              <div class="platform-pane__switches">
-                <label class="platform-pane__switch-item">
-                  <NSwitch v-model:value="markCpaHighest" size="small" />
-                  <span>标记最高</span>
-                </label>
-                <label class="platform-pane__switch-item">
-                  <NSwitch v-model:value="markCpaLowest" size="small" />
-                  <span>标记最低</span>
-                </label>
-              </div>
             </div>
             <div class="platform-pane__head-meta">
               <span class="platform-pane__total">{{ cpaAccounts.length }} 个账号</span>
@@ -1532,31 +1746,30 @@ onBeforeUnmount(() => {
                 <span class="status-chip status-chip--disabled">停用 {{ cpaStateSummary.disabled }}</span>
                 <span class="status-chip status-chip--error">异常 {{ cpaStateSummary.error }}</span>
               </div>
-              <div class="platform-pane__quota-list">
-                <span class="quota-chip">高 {{ formatQuotaValue(cpaQuotaSummary.max) }}</span>
-                <span class="quota-chip">低 {{ formatQuotaValue(cpaQuotaSummary.min) }}</span>
-                <span class="quota-chip">均 {{ formatQuotaValue(cpaQuotaSummary.avg) }}</span>
-              </div>
             </div>
           </div>
           <NScrollbar class="pane-scroll">
-            <div ref="rightGridRef" class="card-grid">
+            <div ref="rightGridRef" class="account-list">
               <AccountQuotaCard
                 v-for="account in cpaAccounts"
                 :key="account.uid"
                 :data-uid="account.uid"
                 :account="account"
                 :metrics="getMetrics(account)"
-                :mark-highest="markCpaHighest && cpaHighestUidSet.has(account.uid)"
-                :mark-lowest="markCpaLowest && cpaLowestUidSet.has(account.uid)"
+                :selection-mode="selectionMode"
+                :selected="isAccountSelected(account.uid)"
                 @copy-email="handleCopyEmail"
                 @open-context-menu="openContextMenu"
+                @toggle-select="toggleAccountSelection"
               />
               <p v-if="!cpaAccounts.length" class="pane-empty">暂无账号</p>
             </div>
           </NScrollbar>
         </section>
       </main>
+      <p v-else class="account-split--empty">
+        当前未启用任何平台模块，请在右下角配置中心开启 Sub2API 或 CPA 的「主页显示」。
+      </p>
 
       <footer class="app-footer">
         <div class="app-footer__inner">
@@ -1618,6 +1831,24 @@ onBeforeUnmount(() => {
         @update-sort-setting="updateSortSetting"
         @save-settings="saveSettings"
         @test-platform="testConnection"
+      />
+
+      <AccountManageModals
+        :show-batch-edit="showBatchEditModal"
+        :show-rename="showRenameModal"
+        :accounts="showRenameModal ? renameTargetAccounts : selectedAccounts"
+        :rename-mode="renameMode"
+        :submitting="manageSubmitting"
+        @update:show-batch-edit="(value) => (showBatchEditModal = value)"
+        @update:show-rename="(value) => (showRenameModal = value)"
+        @submit-batch-edit="applyBatchEdit"
+        @submit-rename="applyRename"
+      />
+
+      <AccountJsonModal
+        :show="showJsonModal"
+        :account="jsonViewAccount"
+        @update:show="(value) => (showJsonModal = value)"
       />
     </div>
     <div v-else class="auth-page">

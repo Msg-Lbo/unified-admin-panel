@@ -55,7 +55,7 @@ const emit = defineEmits<{
 
 const sortFieldOptions: Array<{ label: string; value: SortField }> = [
   { label: "优先级", value: "priority" },
-  { label: "总额度", value: "totalQuota" },
+  { label: "已用费用", value: "totalQuota" },
   { label: "已使用额度", value: "usedQuota" },
   { label: "剩余额度比例", value: "remainingPercent" },
   { label: "更新时间", value: "updatedAt" },
@@ -202,8 +202,8 @@ function saveAndClose(): void {
                   :value="platform.enabled"
                   @update:value="(value) => updateField(platform.id, 'enabled', value)"
                 >
-                  <template #checked>启用</template>
-                  <template #unchecked>停用</template>
+                  <template #checked>主页显示</template>
+                  <template #unchecked>主页隐藏</template>
                 </NSwitch>
                 <NButton
                   secondary

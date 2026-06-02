@@ -1,5 +1,14 @@
 ﻿import type { UnifiedAccount } from "../types/platform";
 
+export interface UsageWindowMetric {
+  window: "5h" | "7d";
+  usedPercent?: number;
+  remainingPercent?: number;
+  resetAt?: string;
+  resetAtLabel?: string;
+  usedUsdValue?: number;
+}
+
 export interface QuotaCardMetrics {
   totalText: string;
   usedText: string;
@@ -10,6 +19,7 @@ export interface QuotaCardMetrics {
   usdQuotaValue?: number;
   remainingPercent?: number;
   usedPercent?: number;
+  usageWindows?: UsageWindowMetric[];
   exhausted: boolean;
 }
 
@@ -155,6 +165,220 @@ function isExpiredResetAt(value: unknown): boolean {
   return timestamp <= Date.now() - 30_000;
 }
 
+function formatResetAtLabel(value: unknown): string | undefined {
+  const timestamp = toOptionalTimestamp(value);
+  if (typeof timestamp !== "number") {
+    return undefined;
+  }
+  const now = Date.now();
+  if (timestamp <= now + 60_000) {
+    return "即将刷新";
+  }
+  return new Date(timestamp).toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  });
+}
+
+interface ResolvedWindowUsage {
+  usedPercent?: number;
+  remainingPercent?: number;
+  resetAt?: string;
+  resetAtLabel?: string;
+}
+
+function pickWindowUsage(
+  candidates: Array<{ value: unknown; resetAt?: unknown }>
+): ResolvedWindowUsage | undefined {
+  let hasExpiredCandidate = false;
+  let expiredResetAt: unknown;
+
+  for (const candidate of candidates) {
+    const value = toOptionalNumber(candidate.value);
+    if (typeof value !== "number") {
+      continue;
+    }
+    if (isExpiredResetAt(candidate.resetAt)) {
+      hasExpiredCandidate = true;
+      expiredResetAt = candidate.resetAt;
+      continue;
+    }
+    const usedPercent = normalizePercent(normalizePercentageLike(value));
+    return {
+      usedPercent,
+      remainingPercent: normalizePercent(100 - usedPercent),
+      resetAt:
+        typeof candidate.resetAt === "string" && candidate.resetAt.trim()
+          ? candidate.resetAt.trim()
+          : undefined,
+      resetAtLabel: formatResetAtLabel(candidate.resetAt)
+    };
+  }
+
+  if (hasExpiredCandidate) {
+    return {
+      usedPercent: 0,
+      remainingPercent: 100,
+      resetAt:
+        typeof expiredResetAt === "string" && expiredResetAt.trim()
+          ? expiredResetAt.trim()
+          : undefined,
+      resetAtLabel: formatResetAtLabel(expiredResetAt)
+    };
+  }
+
+  return undefined;
+}
+
+type Sub2PlanType = "free" | "plus" | "team" | "pro" | "unknown";
+
+function normalizeSub2PlanType(rawType: string): Sub2PlanType {
+  const value = rawType.trim().toLowerCase();
+  if (!value) {
+    return "unknown";
+  }
+  if (value.includes("team")) {
+    return "team";
+  }
+  if (value.includes("chatgptpro") || value.includes(" pro")) {
+    return "pro";
+  }
+  if (value.includes("plus")) {
+    return "plus";
+  }
+  if (value.includes("free")) {
+    return "free";
+  }
+  if (value === "pro") {
+    return "pro";
+  }
+  return "unknown";
+}
+
+function resolveSub2PlanType(raw: Record<string, unknown>): Sub2PlanType {
+  const credentials = toRecord(raw.credentials);
+  const extra = toRecord(raw.extra);
+  const candidates: string[] = [];
+  for (const candidate of [
+    credentials?.plan_type,
+    credentials?.planType,
+    credentials?.chatgpt_plan_type,
+    credentials?.chatgptPlanType,
+    raw.plan_type,
+    raw.planType,
+    raw.subscription_plan,
+    raw.subscriptionPlan,
+    extra?.plan_type,
+    extra?.planType
+  ]) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      candidates.push(candidate);
+    }
+  }
+
+  for (const candidate of candidates) {
+    const planType = normalizeSub2PlanType(candidate);
+    if (planType !== "unknown") {
+      return planType;
+    }
+  }
+  return "unknown";
+}
+
+function shouldClearSub2FiveHourWindow(raw: Record<string, unknown>): boolean {
+  return resolveSub2PlanType(raw) === "free";
+}
+
+function buildClearedFiveHourWindow(): UsageWindowMetric {
+  return {
+    window: "5h",
+    usedPercent: 0,
+    remainingPercent: 0,
+    usedUsdValue: 0
+  };
+}
+
+function resolveWindowUsedUsd(value: number | undefined): number {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+    return value;
+  }
+  return 0;
+}
+
+function resolveSub2UsageWindows(raw: Record<string, unknown>): UsageWindowMetric[] {
+  if (resolveSub2PlanType(raw) === "unknown") {
+    return [];
+  }
+
+  const extra = toRecord(raw.extra);
+  const usageWindow = toRecord(raw.sub2_usage_window ?? raw.usage_window);
+  const usageWindow5h = toRecord(
+    usageWindow?.five_hour ??
+      usageWindow?.fiveHour ??
+      usageWindow?.window_5h ??
+      usageWindow?.codex_5h ??
+      usageWindow?.hour_5
+  );
+  const usageWindow7d = toRecord(
+    usageWindow?.seven_day ?? usageWindow?.sevenDay ?? usageWindow?.window_7d
+  );
+  const fiveHourResetAt =
+    usageWindow5h?.resets_at ??
+    usageWindow5h?.resetsAt ??
+    usageWindow5h?.reset_at ??
+    usageWindow5h?.resetAt ??
+    extra?.codex_5h_reset_at ??
+    extra?.codex5hResetAt;
+  const sevenDayResetAt =
+    usageWindow7d?.resets_at ??
+    usageWindow7d?.resetsAt ??
+    usageWindow7d?.reset_at ??
+    usageWindow7d?.resetAt ??
+    extra?.codex_7d_reset_at ??
+    extra?.codex_primary_reset_at ??
+    extra?.seven_day_reset_at ??
+    extra?.weekly_reset_at;
+
+  const windows: UsageWindowMetric[] = [];
+  const fiveHourUsedUsd = resolveWindowUsedUsd(
+    shouldClearSub2FiveHourWindow(raw) ? 0 : resolveSub2FiveHourUsedUsd(raw)
+  );
+  const sevenDayUsedUsd = resolveWindowUsedUsd(resolveSub2SevenDayUsedUsd(raw));
+
+  if (shouldClearSub2FiveHourWindow(raw)) {
+    windows.push(buildClearedFiveHourWindow());
+  } else {
+    const fiveHour = pickWindowUsage([
+      { value: usageWindow5h?.utilization, resetAt: fiveHourResetAt },
+      { value: usageWindow5h?.used_percent, resetAt: fiveHourResetAt },
+      { value: usageWindow5h?.usedPercent, resetAt: fiveHourResetAt },
+      { value: extra?.codex_5h_used_percent, resetAt: fiveHourResetAt },
+      { value: extra?.codex_5h_utilization, resetAt: fiveHourResetAt }
+    ]);
+    if (fiveHour) {
+      windows.push({ window: "5h", ...fiveHour, usedUsdValue: fiveHourUsedUsd });
+    }
+  }
+
+  const sevenDay = pickWindowUsage([
+    { value: usageWindow7d?.utilization, resetAt: sevenDayResetAt },
+    { value: usageWindow7d?.used_percent, resetAt: sevenDayResetAt },
+    { value: usageWindow7d?.usedPercent, resetAt: sevenDayResetAt },
+    { value: extra?.codex_7d_used_percent, resetAt: sevenDayResetAt },
+    { value: extra?.codex_7d_utilization, resetAt: sevenDayResetAt },
+    { value: extra?.seven_day_used_percent, resetAt: sevenDayResetAt },
+    { value: extra?.weekly_used_percent, resetAt: sevenDayResetAt }
+  ]);
+  if (sevenDay) {
+    windows.push({ window: "7d", ...sevenDay, usedUsdValue: sevenDayUsedUsd });
+  }
+
+  return windows;
+}
+
 function sumRecentHistoryUsedUsd(
   stats: Record<string, unknown> | undefined,
   recentDays: number
@@ -219,6 +443,106 @@ function sumRecentHistoryUsedUsd(
   return Number.isFinite(total) ? total : undefined;
 }
 
+function pickRecordUsedUsd(record: Record<string, unknown> | undefined): number | undefined {
+  if (!record) {
+    return undefined;
+  }
+  return pickFirstNonNegativeNumber([
+    record.user_cost,
+    record.userCost,
+    record.total_user_cost,
+    record.totalUserCost,
+    record.used_usd,
+    record.usedUsd,
+    record.actual_cost,
+    record.actualCost,
+    record.total_actual_cost,
+    record.totalActualCost,
+    record.cost,
+    record.total_cost,
+    record.totalCost,
+    record.standard_cost,
+    record.standardCost
+  ]);
+}
+
+function resolveSub2FiveHourUsedUsd(raw: Record<string, unknown>): number | undefined {
+  const stats = toRecord(raw.sub2_usage_stats);
+  const fiveHourStats = toRecord(
+    stats?.five_hour ?? stats?.fiveHour ?? stats?.window_5h ?? stats?.hour_5 ?? stats?.codex_5h
+  );
+  const fiveHourSummary = toRecord(fiveHourStats?.summary);
+  const usageWindow = toRecord(raw.sub2_usage_window ?? raw.usage_window);
+  const usageWindow5h = toRecord(
+    usageWindow?.five_hour ??
+      usageWindow?.fiveHour ??
+      usageWindow?.window_5h ??
+      usageWindow?.codex_5h ??
+      usageWindow?.hour_5
+  );
+  const usageWindow5hStats = toRecord(
+    usageWindow5h?.window_stats ?? usageWindow5h?.windowStats
+  );
+  const extra = toRecord(raw.extra);
+
+  return pickFirstNonNegativeNumber([
+    raw.codex_5h_used_usd,
+    raw.codex5hUsedUsd,
+    raw.five_hour_used_usd,
+    raw.fiveHourUsedUsd,
+    pickRecordUsedUsd(usageWindow5hStats),
+    pickRecordUsedUsd(fiveHourSummary),
+    pickRecordUsedUsd(fiveHourStats),
+    pickRecordUsedUsd(usageWindow5h),
+    extra?.codex_5h_used_usd,
+    extra?.codex5hUsedUsd,
+    extra?.five_hour_used_usd,
+    extra?.fiveHourUsedUsd
+  ]);
+}
+
+function resolveSub2SevenDayUsedUsd(raw: Record<string, unknown>): number | undefined {
+  const stats = toRecord(raw.sub2_usage_stats);
+  const summary = toRecord(stats?.summary);
+  const sevenDayStats = toRecord(
+    stats?.seven_day ?? stats?.sevenDay ?? stats?.window_7d
+  );
+  const sevenDaySummary = toRecord(sevenDayStats?.summary);
+  const usageWindow = toRecord(raw.sub2_usage_window ?? raw.usage_window);
+  const usageWindow7d = toRecord(
+    usageWindow?.seven_day ?? usageWindow?.sevenDay ?? usageWindow?.window_7d
+  );
+  const usageWindow7dStats = toRecord(
+    usageWindow7d?.window_stats ?? usageWindow7d?.windowStats
+  );
+  const extra = toRecord(raw.extra);
+  const summaryDays = toOptionalNumber(summary?.days ?? summary?.window_days ?? summary?.windowDays);
+  const history7dUsed = sumRecentHistoryUsedUsd(stats, 7);
+
+  return pickFirstNonNegativeNumber([
+    raw.codex_7d_used_usd,
+    raw.codex7dUsedUsd,
+    raw.seven_day_used_usd,
+    raw.sevenDayUsedUsd,
+    raw.weekly_used_usd,
+    raw.weeklyUsedUsd,
+    pickRecordUsedUsd(usageWindow7dStats),
+    pickRecordUsedUsd(sevenDaySummary),
+    pickRecordUsedUsd(sevenDayStats),
+    pickRecordUsedUsd(usageWindow7d),
+    extra?.codex_7d_used_usd,
+    extra?.codex7dUsedUsd,
+    extra?.seven_day_used_usd,
+    extra?.sevenDayUsedUsd,
+    extra?.weekly_used_usd,
+    extra?.weeklyUsedUsd,
+    history7dUsed,
+    typeof summaryDays === "number" && summaryDays <= 7 ? summary?.total_user_cost : undefined,
+    typeof summaryDays === "number" && summaryDays <= 7 ? summary?.total_actual_cost : undefined,
+    typeof summaryDays === "number" && summaryDays <= 7 ? summary?.total_cost : undefined
+  ]);
+}
+
 function resolveUsedUsd(raw: Record<string, unknown>): number | undefined {
   const cpaEstimate = toRecord(raw.cpa_usage_cost_estimate);
   const fromEstimate = toOptionalNumber(cpaEstimate?.estimated_used_usd);
@@ -246,133 +570,31 @@ function resolveUsedUsd(raw: Record<string, unknown>): number | undefined {
 }
 
 function resolveSub2UsedUsd(raw: Record<string, unknown>): number | undefined {
-  // For sub2api, prefer sub2_usage_stats/window-scoped cost fields first.
-  const stats = toRecord(raw.sub2_usage_stats);
-  const summary = toRecord(stats?.summary);
-  const sevenDayStats = toRecord(
-    stats?.seven_day ?? stats?.sevenDay ?? stats?.window_7d
-  );
-  const sevenDaySummary = toRecord(sevenDayStats?.summary);
-  const usageWindow = toRecord(raw.sub2_usage_window ?? raw.usage_window);
-  const usageWindow7d = toRecord(
-    usageWindow?.seven_day ?? usageWindow?.sevenDay ?? usageWindow?.window_7d
-  );
-  const usageWindow7dStats = toRecord(
-    usageWindow7d?.window_stats ?? usageWindow7d?.windowStats
-  );
-  const extra = toRecord(raw.extra);
-  const summaryDays = toOptionalNumber(summary?.days ?? summary?.window_days ?? summary?.windowDays);
-  const history7dUsed = sumRecentHistoryUsedUsd(stats, 7);
-
-  const prioritized = pickFirstNonNegativeNumber([
-    raw.codex_7d_used_usd,
-    raw.codex7dUsedUsd,
-    raw.seven_day_used_usd,
-    raw.sevenDayUsedUsd,
-    raw.weekly_used_usd,
-    raw.weeklyUsedUsd,
-    usageWindow7dStats?.user_cost,
-    usageWindow7dStats?.userCost,
-    usageWindow7dStats?.actual_cost,
-    usageWindow7dStats?.actualCost,
-    usageWindow7dStats?.cost,
-    usageWindow7dStats?.standard_cost,
-    usageWindow7dStats?.standardCost,
-    sevenDaySummary?.total_user_cost,
-    sevenDaySummary?.totalUserCost,
-    sevenDaySummary?.total_actual_cost,
-    sevenDaySummary?.totalActualCost,
-    sevenDaySummary?.total_cost,
-    sevenDaySummary?.totalCost,
-    sevenDaySummary?.user_cost,
-    sevenDaySummary?.userCost,
-    sevenDaySummary?.actual_cost,
-    sevenDaySummary?.actualCost,
-    sevenDaySummary?.used_usd,
-    sevenDaySummary?.usedUsd,
-    sevenDayStats?.total_user_cost,
-    sevenDayStats?.totalUserCost,
-    sevenDayStats?.total_actual_cost,
-    sevenDayStats?.totalActualCost,
-    sevenDayStats?.total_cost,
-    sevenDayStats?.totalCost,
-    sevenDayStats?.user_cost,
-    sevenDayStats?.userCost,
-    sevenDayStats?.actual_cost,
-    sevenDayStats?.actualCost,
-    sevenDayStats?.used_usd,
-    sevenDayStats?.usedUsd,
-    usageWindow7d?.total_user_cost,
-    usageWindow7d?.totalUserCost,
-    usageWindow7d?.total_actual_cost,
-    usageWindow7d?.totalActualCost,
-    usageWindow7d?.total_cost,
-    usageWindow7d?.totalCost,
-    usageWindow7d?.user_cost,
-    usageWindow7d?.userCost,
-    usageWindow7d?.actual_cost,
-    usageWindow7d?.actualCost,
-    usageWindow7d?.used_usd,
-    usageWindow7d?.usedUsd,
-    extra?.codex_7d_used_usd,
-    extra?.codex7dUsedUsd,
-    extra?.seven_day_used_usd,
-    extra?.sevenDayUsedUsd,
-    extra?.weekly_used_usd,
-    extra?.weeklyUsedUsd,
-    history7dUsed,
-    typeof summaryDays === "number" && summaryDays <= 7 ? summary?.total_user_cost : undefined,
-    typeof summaryDays === "number" && summaryDays <= 7 ? summary?.total_actual_cost : undefined,
-    typeof summaryDays === "number" && summaryDays <= 7 ? summary?.total_cost : undefined
-  ]);
-  if (typeof prioritized === "number") {
-    return prioritized;
+  const sevenDayUsed = resolveSub2SevenDayUsedUsd(raw);
+  if (typeof sevenDayUsed === "number") {
+    return sevenDayUsed;
   }
-
   return resolveUsedUsd(raw);
 }
 
-function resolveRemainingUsd(raw: Record<string, unknown>): number | undefined {
-  const value = toOptionalNumber(
-    raw.quota_remaining_usd ??
-      raw.remaining_usd ??
-      raw.balance_usd ??
-      raw.credit_balance_usd
-  );
-  if (typeof value === "number" && value >= 0) {
-    return value;
-  }
-  return undefined;
-}
+function buildUsedDisplayText(
+  base: ResolvedQuotaBase,
+  usedUsdValue?: number
+): string {
+  const hasPercent = typeof base.usedPercent === "number";
+  const hasUsd = typeof usedUsdValue === "number";
 
-function inferTotalByUsage(options: {
-  usedUsd?: number;
-  remainingUsd?: number;
-  remainingPercent?: number;
-}): number | undefined {
-  const { usedUsd, remainingUsd, remainingPercent } = options;
-  if (
-    typeof usedUsd === "number" &&
-    usedUsd >= 0 &&
-    typeof remainingUsd === "number" &&
-    remainingUsd >= 0
-  ) {
-    return usedUsd + remainingUsd;
+  if (hasPercent && hasUsd) {
+    return `${formatPercent(base.usedPercent as number)} · ${formatUsd(usedUsdValue as number)}`;
   }
-
-  if (
-    typeof remainingPercent === "number" &&
-    typeof usedUsd === "number" &&
-    usedUsd >= 0
-  ) {
-    const usedPercent = normalizePercent(100 - remainingPercent);
-    if (usedPercent <= 0) {
-      return undefined;
-    }
-    return usedUsd / (usedPercent / 100);
+  if (hasUsd) {
+    return formatUsd(usedUsdValue as number);
   }
-
-  return undefined;
+  if (hasPercent) {
+    return formatPercent(base.usedPercent as number);
+  }
+  const text = base.usedText.trim();
+  return text.length > 0 && text !== "-" ? text : "-";
 }
 
 function getWindowSeconds(
@@ -571,78 +793,60 @@ export function buildAccountQuotaMetrics(account: UnifiedAccount): QuotaCardMetr
 
   const usedUsd =
     account.platform === "sub2api" ? resolveSub2UsedUsd(raw) : resolveUsedUsd(raw);
-  const remainingUsd = resolveRemainingUsd(raw);
   const base =
     account.platform === "sub2api" ? resolveSub2Quota(raw) : resolveCpaQuota(raw);
-  const preferPercentBasedTotal =
-    account.platform === "sub2api" && typeof base.usedPercent === "number";
-
-  const inferredTotalUsd = inferTotalByUsage({
-    usedUsd,
-    remainingUsd: preferPercentBasedTotal ? undefined : remainingUsd,
-    remainingPercent: base.remainingPercent
-  });
-  const monetaryTotalUsd =
-    !preferPercentBasedTotal &&
-    typeof usedUsd === "number" &&
-    usedUsd >= 0 &&
-    typeof remainingUsd === "number" &&
-    remainingUsd >= 0
-      ? usedUsd + remainingUsd
-      : inferredTotalUsd;
-
-  const totalUsdValue =
-    typeof monetaryTotalUsd === "number" && monetaryTotalUsd > 0
-      ? monetaryTotalUsd
-      : undefined;
   const usedUsdValue =
     typeof usedUsd === "number" && usedUsd >= 0 ? usedUsd : undefined;
-  const usdQuotaValue =
-    totalUsdValue ?? (typeof usedUsdValue === "number" && usedUsdValue > 0 ? usedUsdValue : undefined);
 
-  let totalValue = usdQuotaValue ?? base.total;
-  let usedValue = base.used;
-  let totalText = base.totalText;
-  let usedText = base.usedText;
+  const usageWindows =
+    account.platform === "sub2api" ? resolveSub2UsageWindows(raw) : undefined;
+  const sevenDayWindow = usageWindows?.find((item) => item.window === "7d");
+  const fiveHourWindow = usageWindows?.find((item) => item.window === "5h");
 
-  if (
-    (typeof totalValue !== "number" || totalValue <= 0) &&
-    typeof inferredTotalUsd === "number" &&
-    inferredTotalUsd > 0
-  ) {
-    totalValue = inferredTotalUsd;
-    totalText = `估算 ${formatUsd(inferredTotalUsd)}`;
+  let usedPercent = forceExhausted ? 100 : base.usedPercent;
+  let remainingPercent = forceExhausted ? 0 : base.remainingPercent;
+  if (!forceExhausted && sevenDayWindow) {
+    if (typeof sevenDayWindow.usedPercent === "number") {
+      usedPercent = sevenDayWindow.usedPercent;
+    }
+    if (typeof sevenDayWindow.remainingPercent === "number") {
+      remainingPercent = sevenDayWindow.remainingPercent;
+    }
+  } else if (!forceExhausted && fiveHourWindow && typeof usedPercent !== "number") {
+    usedPercent = fiveHourWindow.usedPercent;
+    remainingPercent = fiveHourWindow.remainingPercent;
   }
 
-  if (typeof usedUsdValue === "number") {
-    usedValue = usedUsdValue;
-    usedText = usedText === "-" ? formatUsd(usedUsdValue) : `${usedText} / ${formatUsd(usedUsdValue)}`;
-  }
-
-  if (
-    typeof remainingUsd === "number" &&
-    totalText !== "-" &&
-    !totalText.includes("估算") &&
-    typeof usedUsdValue !== "number"
-  ) {
-    totalText = `${totalText} / ${formatUsd(remainingUsd + (usedUsdValue ?? 0))}`;
-  }
-
-  const usedPercent = forceExhausted ? 100 : base.usedPercent;
-  const remainingPercent = forceExhausted ? 0 : base.remainingPercent;
   const exhausted = forceExhausted || (typeof usedPercent === "number" && usedPercent >= 99.95);
 
   return {
-    totalText,
-    usedText,
-    totalValue,
-    usedValue,
+    totalText: "-",
+    usedText: buildUsedDisplayText(base, usedUsdValue),
+    totalValue: undefined,
+    usedValue: usedUsdValue ?? base.used,
     usedUsdValue,
-    totalUsdValue,
-    usdQuotaValue,
+    totalUsdValue: undefined,
+    usdQuotaValue: usedUsdValue,
     remainingPercent,
     usedPercent,
+    usageWindows: usageWindows?.length ? usageWindows : undefined,
     exhausted
   };
+}
+
+export function resolveAccountPlanType(account: UnifiedAccount): Sub2PlanType {
+  const raw = toRecord(account.raw);
+  if (!raw) {
+    return "unknown";
+  }
+  return resolveSub2PlanType(raw);
+}
+
+export function isUnknownPlanAccount(account: UnifiedAccount): boolean {
+  return resolveAccountPlanType(account) === "unknown";
+}
+
+export function shouldFetchSub2QuotaDetails(_raw: Record<string, unknown>): boolean {
+  return true;
 }
 

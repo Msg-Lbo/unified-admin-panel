@@ -1,13 +1,13 @@
 ﻿<script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import type { UnifiedAccount } from "../types/platform";
-import type { QuotaCardMetrics } from "../utils/quotaCard";
+import type { QuotaCardMetrics, UsageWindowMetric } from "../utils/quotaCard";
 
 const props = defineProps<{
   account: UnifiedAccount;
   metrics: QuotaCardMetrics;
-  markHighest?: boolean;
-  markLowest?: boolean;
+  selectionMode?: boolean;
+  selected?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -16,6 +16,7 @@ const emit = defineEmits<{
     event: "open-context-menu",
     payload: { account: UnifiedAccount; x: number; y: number }
   ): void;
+  (event: "toggle-select", uid: string): void;
 }>();
 
 type PlanType = "free" | "plus" | "team" | "pro" | "unknown";
@@ -87,6 +88,23 @@ function hasClearRemainingQuota(metrics: QuotaCardMetrics): boolean {
   );
 }
 
+function normalizeAuthTypeLabel(rawType: string): string {
+  const value = rawType.trim().toLowerCase();
+  if (!value || value === "unknown") {
+    return "unknown";
+  }
+  if (value.includes("oauth")) {
+    return "oauth";
+  }
+  if (value.includes("openai")) {
+    return "openai";
+  }
+  if (value.includes("anthropic") || value.includes("claude")) {
+    return "claude";
+  }
+  return value;
+}
+
 function normalizePlanType(rawType: string): PlanType {
   const value = rawType.trim().toLowerCase();
   if (!value) {
@@ -126,10 +144,7 @@ function resolvePlanTypeFromAccount(account: UnifiedAccount): PlanType {
     raw?.subscription_plan,
     raw?.subscriptionPlan,
     extra?.plan_type,
-    extra?.planType,
-    account.type,
-    account.name,
-    account.accountId
+    extra?.planType
   ]) {
     if (typeof candidate === "string" && candidate.trim()) {
       candidates.push(candidate);
@@ -213,10 +228,76 @@ const statusLabel = computed(() => {
   return normalizedLabel;
 });
 
-const displayEmail = computed(() => props.account.email?.trim() || "-");
+const displayEmail = computed(() => {
+  const direct = props.account.email?.trim();
+  if (direct) {
+    return direct;
+  }
+  const raw = toRecord(props.account.raw);
+  const credentials = toRecord(raw?.credentials);
+  const nestedEmail =
+    typeof credentials?.email === "string" ? credentials.email.trim() : "";
+  return nestedEmail || "";
+});
+
+const displayName = computed(() => {
+  const name = props.account.name?.trim();
+  if (name && name !== "-") {
+    return name;
+  }
+  if (displayEmail.value) {
+    return displayEmail.value;
+  }
+  return props.account.accountId?.trim() || "-";
+});
+
+const rowPrimaryText = computed(() => displayEmail.value || displayName.value);
+
+const authTypeLabel = computed(() => normalizeAuthTypeLabel(props.account.type));
 const planType = computed<PlanType>(() => resolvePlanTypeFromAccount(props.account));
+const usageWindows = computed(() => props.metrics.usageWindows ?? []);
 const isUpdating = ref(false);
-const isBackgroundLowering = ref(false);
+
+function formatWindowUsed(item: UsageWindowMetric): string {
+  if (typeof item.usedPercent === "number") {
+    return formatPercent(item.usedPercent);
+  }
+  return "-";
+}
+
+function formatWindowAmount(item: UsageWindowMetric): string {
+  const value =
+    typeof item.usedUsdValue === "number" && Number.isFinite(item.usedUsdValue)
+      ? item.usedUsdValue
+      : 0;
+  return formatUsd(value);
+}
+
+function windowRemainingPercent(item: UsageWindowMetric): number {
+  if (typeof item.remainingPercent === "number") {
+    return Math.max(0, Math.min(100, item.remainingPercent));
+  }
+  if (typeof item.usedPercent === "number") {
+    return Math.max(0, Math.min(100, 100 - item.usedPercent));
+  }
+  return 0;
+}
+
+function windowProgressStyle(item: UsageWindowMetric): Record<string, string> {
+  const remaining = windowRemainingPercent(item);
+  if (remaining <= 0) {
+    return {
+      width: "0%",
+      background: "transparent"
+    };
+  }
+  const main = colorForRemainingPercent(remaining);
+  const edge = colorForRemainingPercent(Math.max(0, remaining - 8));
+  return {
+    width: `${remaining}%`,
+    background: `linear-gradient(90deg, ${main} 0%, ${edge} 100%)`
+  };
+}
 
 const resolvedUsedPercent = computed(() =>
   Math.max(
@@ -226,41 +307,95 @@ const resolvedUsedPercent = computed(() =>
       props.metrics.usedPercent ??
         (typeof props.metrics.remainingPercent === "number"
           ? 100 - props.metrics.remainingPercent
-          : 38)
+          : 0)
     )
   )
 );
 
-const resolvedRemainingPercent = computed(() =>
-  Math.max(0, Math.min(100, 100 - resolvedUsedPercent.value))
+const hasProgressMetric = computed(
+  () =>
+    typeof props.metrics.remainingPercent === "number" ||
+    typeof props.metrics.usedPercent === "number"
 );
 
-const unifiedUsedDisplayText = computed(() => {
-  const percent =
-    typeof props.metrics.usedPercent === "number"
-      ? formatPercent(props.metrics.usedPercent)
-      : undefined;
-  const usedUsd = props.metrics.usedUsdValue;
-  const totalUsd = props.metrics.totalUsdValue;
-
-  if (percent) {
-    const usedText =
-      typeof usedUsd === "number" && Number.isFinite(usedUsd) ? formatUsd(usedUsd) : "-";
-    const totalText =
-      typeof totalUsd === "number" && Number.isFinite(totalUsd) && totalUsd > 0
-        ? formatUsd(totalUsd)
-        : "-";
-    return `${percent}(${usedText}/${totalText})`;
+const resolvedRemainingPercent = computed(() => {
+  if (!hasProgressMetric.value) {
+    return 0;
   }
-
-  const fallback = props.metrics.usedText?.trim();
-  return fallback && fallback.length > 0 ? fallback : "-";
+  if (typeof props.metrics.remainingPercent === "number") {
+    return Math.max(0, Math.min(100, props.metrics.remainingPercent));
+  }
+  return Math.max(0, Math.min(100, 100 - resolvedUsedPercent.value));
 });
 
-const metricSignature = computed(
+function colorForRemainingPercent(remaining: number): string {
+  const ratio = Math.max(0, Math.min(1, remaining / 100));
+  const hue = ratio * 88;
+  return `hsl(${hue.toFixed(1)} 78% 46%)`;
+}
+
+const progressFillStyle = computed(() => {
+  const remaining = resolvedRemainingPercent.value;
+  if (remaining <= 0) {
+    return {
+      width: "0%",
+      background: "transparent"
+    };
+  }
+  const main = colorForRemainingPercent(remaining);
+  const edge = colorForRemainingPercent(Math.max(0, remaining - 8));
+  return {
+    width: `${remaining}%`,
+    background: `linear-gradient(90deg, ${main} 0%, ${edge} 100%)`
+  };
+});
+
+const usageAmountText = computed(() => {
+  if (
+    typeof props.metrics.usedUsdValue === "number" &&
+    Number.isFinite(props.metrics.usedUsdValue)
+  ) {
+    return formatUsd(props.metrics.usedUsdValue);
+  }
+  const fallback = props.metrics.usedText?.trim();
+  if (!fallback || fallback === "-") {
+    return "";
+  }
+  const usdMatch = fallback.match(/\$[\d,.]+/);
+  if (usdMatch) {
+    return usdMatch[0];
+  }
+  if (!fallback.includes("%")) {
+    return fallback;
+  }
+  return "";
+});
+
+const showUsageRows = computed(
   () =>
-    `${props.metrics.totalText}|${props.metrics.usedText}|${props.metrics.totalUsdValue ?? ""}|${props.metrics.usedUsdValue ?? ""}|${props.metrics.remainingPercent ?? ""}|${props.metrics.usedPercent ?? ""}|${props.metrics.exhausted ? "1" : "0"}`
+    planType.value !== "unknown" &&
+    (usageWindows.value.length > 0 ||
+      Boolean(usageAmountText.value) ||
+      hasProgressMetric.value)
 );
+
+const showFallbackUsageRow = computed(
+  () => !usageWindows.value.length && (Boolean(usageAmountText.value) || hasProgressMetric.value)
+);
+
+function shouldShowWindowProgress(window: UsageWindowMetric["window"]): boolean {
+  return window === "5h" || window === "7d";
+}
+
+const metricSignature = computed(() => {
+  const windows = (props.metrics.usageWindows ?? [])
+    .map(
+      (item) =>
+        `${item.window}:${item.usedPercent ?? ""}:${item.remainingPercent ?? ""}:${item.resetAtLabel ?? ""}:${item.usedUsdValue ?? ""}`
+    )
+    .join("|");
+  return `${props.metrics.totalText}|${props.metrics.usedText}|${props.metrics.totalUsdValue ?? ""}|${props.metrics.usedUsdValue ?? ""}|${props.metrics.remainingPercent ?? ""}|${props.metrics.usedPercent ?? ""}|${windows}|${props.metrics.exhausted ? "1" : "0"}`;
+});
 
 let mountedOnce = false;
 let updateTimer: ReturnType<typeof setTimeout> | null = null;
@@ -279,53 +414,30 @@ watch(metricSignature, () => {
   }, 520);
 });
 
-watch(resolvedRemainingPercent, (next, previous) => {
-  if (typeof previous !== "number") {
-    return;
-  }
-  isBackgroundLowering.value = next < previous;
-});
-
 onBeforeUnmount(() => {
   if (updateTimer) {
     clearTimeout(updateTimer);
   }
 });
 
-const cardStyle = computed<Record<string, string>>(() => {
-  if (props.metrics.exhausted) {
-    return {
-      background:
-        "linear-gradient(145deg, rgba(20,24,35,0.98) 0%, rgba(12,16,28,0.98) 68%, rgba(6,8,16,0.98) 100%)"
-    };
-  }
-
-  const remainingPercent = resolvedRemainingPercent.value;
-
-  return {
-    background: `
-      linear-gradient(
-        90deg,
-        rgba(56,189,248,0.46) 0%,
-        rgba(15,118,110,0.4) ${remainingPercent}%,
-        rgba(9,17,35,0.96) ${remainingPercent}%,
-        rgba(9,17,35,0.96) 100%
-      ),
-      linear-gradient(
-        140deg,
-        rgba(10,17,40,0.96) 0%,
-        rgba(17,33,64,0.96) 62%,
-        rgba(12,26,48,0.96) 100%
-      )
-    `
-  };
-});
-
 function handleCopyEmail(): void {
-  if (displayEmail.value === "-") {
+  if (!displayEmail.value) {
     return;
   }
   emit("copy-email", displayEmail.value);
+}
+
+function handleToggleSelect(event: Event): void {
+  event.stopPropagation();
+  emit("toggle-select", props.account.uid);
+}
+
+function handleRowClick(): void {
+  if (props.selectionMode) {
+    emit("toggle-select", props.account.uid);
+    return;
+  }
+  handleCopyEmail();
 }
 
 function handleContextMenu(event: MouseEvent): void {
@@ -339,46 +451,111 @@ function handleContextMenu(event: MouseEvent): void {
 
 <template>
   <article
-    class="account-card account-card--clickable"
+    class="account-row account-row--clickable"
     :class="{
-      'account-card--exhausted': metrics.exhausted,
-      'account-card--updating': isUpdating,
-      'account-card--background-lowering': isBackgroundLowering,
-      'account-card--mark-highest': markHighest,
-      'account-card--mark-lowest': markLowest
+      'account-row--exhausted': metrics.exhausted,
+      'account-row--updating': isUpdating,
+      'account-row--selected': selected
     }"
-    :style="cardStyle"
     role="button"
     tabindex="0"
-    @click="handleCopyEmail"
-    @keydown.enter.prevent="handleCopyEmail"
-    @keydown.space.prevent="handleCopyEmail"
+    @click="handleRowClick"
+    @keydown.enter.prevent="handleRowClick"
+    @keydown.space.prevent="handleRowClick"
     @contextmenu.prevent="handleContextMenu"
   >
-    <header class="account-card__head">
-      <p class="account-card__email">{{ displayEmail }}</p>
-      <div class="account-card__tags">
-        <span class="account-card__status" :class="`account-card__status--${statusTone}`">
+    <div class="account-row__line1">
+      <label
+        v-if="selectionMode"
+        class="account-row__select"
+        @click.stop
+        @keydown.stop
+      >
+        <input
+          type="checkbox"
+          class="account-row__select-input"
+          :checked="selected"
+          @change="handleToggleSelect"
+        />
+      </label>
+      <p class="account-row__email-primary" :title="rowPrimaryText">{{ rowPrimaryText }}</p>
+      <div class="account-row__tags">
+        <span class="account-row__status" :class="`account-row__status--${statusTone}`">
           {{ statusLabel }}
         </span>
-        <span class="account-card__type" :class="`account-card__type--${planType}`">
+        <span
+          class="account-row__auth-type"
+          :class="`account-row__auth-type--${authTypeLabel === 'unknown' ? 'unknown' : 'known'}`"
+        >
+          {{ authTypeLabel }}
+        </span>
+        <span class="account-row__type" :class="`account-row__type--${planType}`">
           {{ planType }}
         </span>
-        <span v-if="markHighest" class="account-card__mark account-card__mark--highest">
-          最高
-        </span>
-        <span v-if="markLowest" class="account-card__mark account-card__mark--lowest">
-          最低
-        </span>
       </div>
-    </header>
+    </div>
 
-    <div class="account-card__quota">
-      <div class="account-card__quota-row">
-        <span>已使用</span>
-        <strong>{{ unifiedUsedDisplayText }}</strong>
+    <div v-if="showUsageRows" class="account-row__windows">
+      <div
+        v-for="item in usageWindows"
+        :key="item.window"
+        class="account-row__window"
+      >
+        <div class="account-row__window-meta">
+          <span class="account-row__window-label">{{ item.window }}</span>
+          <span class="account-row__window-percent">{{ formatWindowUsed(item) }}</span>
+          <span
+            v-if="item.resetAtLabel"
+            class="account-row__window-reset"
+            :title="item.resetAt ? `下次刷新：${item.resetAt}` : undefined"
+          >
+            刷新 {{ item.resetAtLabel }}
+          </span>
+          <span
+            v-if="shouldShowWindowProgress(item.window)"
+            class="account-row__window-amount"
+          >
+            {{ formatWindowAmount(item) }}
+          </span>
+        </div>
+        <div
+          v-if="shouldShowWindowProgress(item.window)"
+          class="account-row__window-progress"
+          role="progressbar"
+          :aria-valuenow="windowRemainingPercent(item)"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          :aria-label="`${item.window} 剩余额度`"
+        >
+          <div
+            v-if="windowRemainingPercent(item) > 0"
+            class="account-row__window-progress-fill"
+            :style="windowProgressStyle(item)"
+          />
+        </div>
+      </div>
+
+      <div v-if="showFallbackUsageRow" class="account-row__window">
+        <div class="account-row__window-meta">
+          <span class="account-row__window-label">已用</span>
+          <span v-if="usageAmountText" class="account-row__window-amount">{{ usageAmountText }}</span>
+        </div>
+        <div
+          v-if="hasProgressMetric"
+          class="account-row__window-progress"
+          role="progressbar"
+          :aria-valuenow="resolvedRemainingPercent"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-label="剩余额度"
+        >
+          <div
+            v-if="resolvedRemainingPercent > 0"
+            class="account-row__window-progress-fill"
+            :style="progressFillStyle"
+          />
+        </div>
       </div>
     </div>
   </article>
 </template>
-
