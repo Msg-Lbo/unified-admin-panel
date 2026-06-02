@@ -807,10 +807,19 @@ function writeSub2AccountUsageWindowCache(
   });
 }
 
+function getRuntimeApiKeyEnvHint(platformId: PlatformConfig["id"]): string {
+  if (platformId === "sub2api") {
+    return "SUB2API_API_KEY";
+  }
+  return "CPA_API_KEY 或 CLIPROXYAPI_API_KEY";
+}
+
 function getRequiredApiKey(platform: PlatformConfig): string {
   const apiKey = platform.apiKey.trim();
   if (!apiKey) {
-    throw new Error("API key is required.");
+    throw new Error(
+      `未配置 API Key，请在 Cloudflare 环境变量中设置 ${getRuntimeApiKeyEnvHint(platform.id)}。`
+    );
   }
   return apiKey;
 }

@@ -61,7 +61,16 @@ npm install
 npm run dev
 ```
 
-本地开发时，需在 Cloudflare 环境变量或 `wrangler.toml` 的 `[vars]` 中配置平台地址与 Key；也可通过 `/api/config` 读取（与生产一致）。
+`npm run dev` 会同时启动：
+
+- **wrangler dev**（`127.0.0.1:8787`）— 提供 `/api/config`、`/api/proxy`，读取 `wrangler.toml` 与 Cloudflare 密钥（与线上一致）
+- **Vite**（`5173`）— 前端热更新，并将 `/api/*` 代理到 Worker
+
+平台地址与 API Key **仅**来自 Cloudflare 配置（`wrangler.toml` 的 `[vars]` + 控制台 Variables/Secrets，或 `wrangler secret put`），不再读取本地 `.env` / `.env.local`。
+
+本地调试若需与线上相同的密钥，可使用 `wrangler dev --remote`（在 `package.json` 的 `dev:worker` 脚本中自行加上 `--remote`）。
+
+若出现 `sub2api: 未配置 API Key...`，请在 Cloudflare 控制台或 `wrangler secret put SUB2API_API_KEY` 中配置密钥。
 
 ## 构建
 
@@ -88,7 +97,9 @@ npx wrangler deploy
 | `SUB2API_BASE_URL` | sub2api 地址 |
 | `SUB2API_API_KEY` | sub2api Key |
 
-`wrangler.toml` 中可写默认值，生产环境建议在 Cloudflare 控制台覆盖。
+`wrangler.toml` 的 `[vars]` 可写默认地址；**API Key 必须用加密变量**（控制台 Variables / Secrets，或 `npx wrangler secret put SUB2API_API_KEY`），不要写入 Git。
+
+未配置 `SUB2API_API_KEY` 时，Sub2API 模块会报错且无法拉取账号列表。
 
 ### 本地仅保存的配置
 

@@ -742,18 +742,6 @@ body {
   color: rgba(100, 116, 139, 0.95);
 }
 
-.floating-config-modal__runtime-line {
-  margin: 0;
-  font-size: 12px;
-  line-height: 1.5;
-  color: #334155;
-  word-break: break-all;
-}
-
-:root[data-theme="dark"] .floating-config-modal__runtime-line {
-  color: #cbd5e1;
-}
-
 .floating-config-modal__hint {
   margin: 6px 0 0;
   color: var(--text-subtle);

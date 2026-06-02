@@ -4,9 +4,12 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "concurrently -k -n worker,vite -c blue,green \"wrangler dev --ip 127.0.0.1 --port 8787\" \"vite\"",
+    "dev:vite": "vite",
+    "dev:worker": "wrangler dev --ip 127.0.0.1 --port 8787",
     "build": "vue-tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "deploy": "npm run build && wrangler deploy"
   },
   "dependencies": {
     "@vicons/ionicons5": "^0.13.0",
@@ -19,8 +22,10 @@
     "@cloudflare/workers-types": "^4.20260602.1",
     "@types/node": "^24.3.0",
     "@vitejs/plugin-vue": "^6.0.1",
+    "concurrently": "^9.2.1",
     "typescript": "^5.9.2",
     "vite": "^7.1.3",
-    "vue-tsc": "^3.0.7"
+    "vue-tsc": "^3.0.7",
+    "wrangler": "^4.54.0"
   }
 }

@@ -11,7 +11,7 @@ import {
   NSpace,
   NSwitch
 } from "naive-ui";
-import { RUNTIME_API_KEY_SENTINEL, type PlatformConfig, type PlatformKind } from "../types/platform";
+import type { PlatformConfig, PlatformKind } from "../types/platform";
 import type {
   PlatformSortSettings,
   SortDirection,
@@ -74,22 +74,6 @@ function updateSortDirection(platformId: PlatformKind, value: string): void {
   });
 }
 
-function formatRuntimeBaseUrl(platform: PlatformConfig): string {
-  const value = platform.baseUrl.trim();
-  return value || "未配置";
-}
-
-function formatRuntimeApiKey(platform: PlatformConfig): string {
-  const value = platform.apiKey.trim();
-  if (!value) {
-    return "未配置";
-  }
-  if (value === RUNTIME_API_KEY_SENTINEL) {
-    return "已由 Cloudflare 环境变量提供";
-  }
-  return "已配置";
-}
-
 function saveAndClose(): void {
   emit("save-settings");
   emit("update:show", false);
@@ -111,22 +95,13 @@ function saveAndClose(): void {
       aria-modal="true"
     >
       <p class="floating-config-modal__intro">
-        平台地址与 API Key 仅在 Cloudflare 环境变量中配置；本地仅保存主页显示开关与排序偏好。
+        本地仅保存主页显示开关与排序偏好；平台连接在 Cloudflare 环境变量中配置。
       </p>
 
       <NGrid :cols="'1 s:1 m:2 l:2'" responsive="screen" :x-gap="16" :y-gap="16">
         <NGridItem v-for="platform in props.platforms" :key="platform.id">
           <NCard :title="platform.name.toUpperCase()" size="small" class="floating-config-modal__platform-card">
             <NForm label-placement="top">
-              <NFormItem label="运行时连接">
-                <p class="floating-config-modal__runtime-line">
-                  地址：{{ formatRuntimeBaseUrl(platform) }}
-                </p>
-                <p class="floating-config-modal__runtime-line">
-                  Key：{{ formatRuntimeApiKey(platform) }}
-                </p>
-              </NFormItem>
-
               <NFormItem label="卡片排序字段">
                 <NSelect
                   :value="props.sortSettings[platform.id].field"

@@ -6,4 +6,5 @@ dist
 vite.config.js
 vite.config.d.ts
 *.local
+.dev.vars
 .tmp_sub2api_upstream/

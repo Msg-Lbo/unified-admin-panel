@@ -402,8 +402,22 @@ async function loadRuntimeConfig(): Promise<void> {
       return;
     }
     applyRuntimePlatformDefaults(payload.platforms);
+    for (const runtimePlatform of payload.platforms) {
+      const baseUrl = sanitizeBaseUrl(runtimePlatform.baseUrl ?? "");
+      const apiKey = runtimePlatform.apiKey?.trim() ?? "";
+      if (baseUrl && !apiKey) {
+        const envName =
+          runtimePlatform.id === "sub2api"
+            ? "SUB2API_API_KEY"
+            : "CPA_API_KEY / CLIPROXYAPI_API_KEY";
+        notify(
+          "warning",
+          `${runtimePlatform.id}: 已配置地址但未设置 ${envName}，请在 Cloudflare 环境变量中配置。`
+        );
+      }
+    }
   } catch {
-    // 运行时配置不可用时地址与 Key 保持为空，需检查 Cloudflare 环境变量。
+    // 运行时配置不可用（需 wrangler dev 或已部署的 /api/config）。
   }
 }
 
