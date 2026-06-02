@@ -6,30 +6,21 @@ import {
   NFormItem,
   NGrid,
   NGridItem,
-  NInput,
   NModal,
   NSelect,
   NSpace,
   NSwitch
 } from "naive-ui";
-import {
-  RUNTIME_API_KEY_SENTINEL,
-  type PlatformConfig,
-  type PlatformKind
-} from "../types/platform";
+import { RUNTIME_API_KEY_SENTINEL, type PlatformConfig, type PlatformKind } from "../types/platform";
 import type {
   PlatformSortSettings,
   SortDirection,
   SortField
 } from "../types/viewSettings";
 
-type EditableKey = "baseUrl" | "apiKey" | "enabled";
-type TextConfigKey = "baseUrl" | "apiKey";
-
 const props = defineProps<{
   show: boolean;
   platforms: PlatformConfig[];
-  fixedPlatforms: PlatformConfig[];
   testLoading: Record<PlatformKind, boolean>;
   checkMessages: Record<PlatformKind, string>;
   sortSettings: PlatformSortSettings;
@@ -38,8 +29,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   (event: "update:show", value: boolean): void;
   (
-    event: "update-platform-field",
-    payload: { platformId: PlatformKind; key: EditableKey; value: string | boolean }
+    event: "update-platform-enabled",
+    payload: { platformId: PlatformKind; enabled: boolean }
   ): void;
   (
     event: "update-sort-setting",
@@ -67,14 +58,6 @@ const sortDirectionOptions: Array<{ label: string; value: SortDirection }> = [
   { label: "降序", value: "desc" }
 ];
 
-function updateField(
-  platformId: PlatformKind,
-  key: EditableKey,
-  value: string | boolean
-): void {
-  emit("update-platform-field", { platformId, key, value });
-}
-
 function updateSortField(platformId: PlatformKind, value: string): void {
   emit("update-sort-setting", {
     platformId,
@@ -91,28 +74,20 @@ function updateSortDirection(platformId: PlatformKind, value: string): void {
   });
 }
 
-function getFixedPlatform(platformId: PlatformKind): PlatformConfig | undefined {
-  return props.fixedPlatforms.find((item) => item.id === platformId);
+function formatRuntimeBaseUrl(platform: PlatformConfig): string {
+  const value = platform.baseUrl.trim();
+  return value || "未配置";
 }
 
-function getLocalDisplayValue(platform: PlatformConfig, key: TextConfigKey): string {
-  const value = platform[key].trim();
-  const fixedValue = getFixedPlatform(platform.id)?.[key].trim() ?? "";
-  if (!value || value === fixedValue) {
-    return "";
+function formatRuntimeApiKey(platform: PlatformConfig): string {
+  const value = platform.apiKey.trim();
+  if (!value) {
+    return "未配置";
   }
-  if (key === "apiKey" && value === RUNTIME_API_KEY_SENTINEL) {
-    return "";
+  if (value === RUNTIME_API_KEY_SENTINEL) {
+    return "已由 Cloudflare 环境变量提供";
   }
-  return value;
-}
-
-function hasLocalOverride(platform: PlatformConfig, key: TextConfigKey): boolean {
-  return getLocalDisplayValue(platform, key).length > 0;
-}
-
-function hasFixedValue(platform: PlatformConfig, key: TextConfigKey): boolean {
-  return Boolean(getFixedPlatform(platform.id)?.[key].trim());
+  return "已配置";
 }
 
 function saveAndClose(): void {
@@ -135,49 +110,20 @@ function saveAndClose(): void {
       role="dialog"
       aria-modal="true"
     >
+      <p class="floating-config-modal__intro">
+        平台地址与 API Key 仅在 Cloudflare 环境变量中配置；本地仅保存主页显示开关与排序偏好。
+      </p>
+
       <NGrid :cols="'1 s:1 m:2 l:2'" responsive="screen" :x-gap="16" :y-gap="16">
         <NGridItem v-for="platform in props.platforms" :key="platform.id">
           <NCard :title="platform.name.toUpperCase()" size="small" class="floating-config-modal__platform-card">
             <NForm label-placement="top">
-              <NFormItem label="平台地址">
-                <NInput
-                  :value="getLocalDisplayValue(platform, 'baseUrl')"
-                  placeholder="留空则使用固定平台地址"
-                  @update:value="(value) => updateField(platform.id, 'baseUrl', value)"
-                />
-                <p
-                  v-if="hasLocalOverride(platform, 'baseUrl')"
-                  class="floating-config-modal__hint"
-                >
-                  当前使用本地覆盖值；清空后保存会回到固定平台地址。
+              <NFormItem label="运行时连接">
+                <p class="floating-config-modal__runtime-line">
+                  地址：{{ formatRuntimeBaseUrl(platform) }}
                 </p>
-                <p
-                  v-else-if="hasFixedValue(platform, 'baseUrl')"
-                  class="floating-config-modal__hint"
-                >
-                  当前使用固定平台地址，可在此填写本地覆盖值。
-                </p>
-              </NFormItem>
-
-              <NFormItem label="API Key">
-                <NInput
-                  :value="getLocalDisplayValue(platform, 'apiKey')"
-                  type="password"
-                  show-password-on="click"
-                  placeholder="留空则使用固定 API Key"
-                  @update:value="(value) => updateField(platform.id, 'apiKey', value)"
-                />
-                <p
-                  v-if="hasLocalOverride(platform, 'apiKey')"
-                  class="floating-config-modal__hint"
-                >
-                  当前使用本地覆盖值；清空后保存会回到固定 API Key。
-                </p>
-                <p
-                  v-else-if="hasFixedValue(platform, 'apiKey')"
-                  class="floating-config-modal__hint"
-                >
-                  当前使用固定 API Key，可在此填写本地覆盖值。
+                <p class="floating-config-modal__runtime-line">
+                  Key：{{ formatRuntimeApiKey(platform) }}
                 </p>
               </NFormItem>
 
@@ -200,7 +146,9 @@ function saveAndClose(): void {
               <NSpace justify="space-between" align="center" class="floating-config-modal__bottom">
                 <NSwitch
                   :value="platform.enabled"
-                  @update:value="(value) => updateField(platform.id, 'enabled', value)"
+                  @update:value="(value) =>
+                    emit('update-platform-enabled', { platformId: platform.id, enabled: value })
+                  "
                 >
                   <template #checked>主页显示</template>
                   <template #unchecked>主页隐藏</template>

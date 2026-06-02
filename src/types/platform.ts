@@ -10,6 +10,11 @@ export interface PlatformConfig {
   enabled: boolean;
 }
 
+export interface StoredPlatformPrefs {
+  id: PlatformKind;
+  enabled: boolean;
+}
+
 export interface UnifiedAccount {
   uid: string;
   platform: PlatformKind;

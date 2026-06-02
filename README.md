@@ -1,102 +1,110 @@
-# Unified Admin Panel
+# 统一账号额度面板
 
-Vue 3 + TypeScript + Naive UI admin panel for unified account visibility and management across:
+基于 Vue 3 + TypeScript + Naive UI 的管理面板，用于统一查看和管理以下平台的账号：
 
-- `CLIProxyAPI`
+- `CLIProxyAPI`（CPA）
 - `sub2api`
 
-## Implemented Features
+## 已实现功能
 
-- Theme switch (`light` / `dark`) with local persistence
-- Full-screen dashboard layout with fixed left navigation
-- Platform config panel (base URL + API key + enabled), with local values overriding fixed defaults
-- API key can come from Cloudflare environment variables; local overrides are still stored in browser `localStorage`
-- Built-in same-origin proxy endpoint (`/api/proxy`) for CORS-safe API calls (Cloudflare Pages Functions + Vite dev middleware)
-- Per-platform connection test
-- Unified account table with:
-  - search/filter
-  - row-level actions (detail / edit / enable-disable)
-  - multi-select batch actions
-- ECharts-based usage trend line chart (sub2api + cpa)
-- Account detail modal:
-  - profile payload
-  - usage/stats payload
-  - models payload
-  - auto refresh
-- Management actions:
-  - single enable/disable
-  - single field edit
-  - batch enable/disable
-  - batch field edit (with platform capability-aware handling)
-- Cloudflare Pages deploy config (`wrangler.toml` + SPA `_redirects`)
+- 主题切换（浅色 / 深色），偏好保存在本地
+- 全屏仪表盘布局，支持 Sub2API / CPA 分栏展示
+- 配置中心：主页模块显示开关、卡片排序、连接测试（地址与 Key 由 Cloudflare 环境变量提供）
+- 内置同源代理接口（`POST /api/proxy`），避免浏览器跨域（Cloudflare Pages Functions + Vite 开发中间件）
+- 账号额度卡片：5h / 7d 窗口、进度条、批量选择与编辑
+- 右键查看账号 JSON（语法高亮、可折叠、行号）
+- 管理操作：单个/批量启停、批量编辑、批量按邮箱重命名（Sub2API）
+- Cloudflare Workers 部署配置（`wrangler.toml` + 静态资源 `dist`）
 
-## Componentized Structure
+## 组件结构
 
-The UI is decoupled into reusable components:
+主要 UI 组件：
 
-- `src/components/AppHeader.vue`
-- `src/components/SidebarNav.vue`
-- `src/components/PlatformConfigPanel.vue`
-- `src/components/AccountStatsGrid.vue`
-- `src/components/PlatformTrendChart.vue`
-- `src/components/AccountTable.vue`
-- `src/components/AccountDetailModal.vue`
-- `src/components/EditAccountModal.vue`
-- `src/components/BatchEditModal.vue`
+- `src/App.vue` — 主界面、分栏、批量操作
+- `src/components/FloatingConfigModal.vue` — 配置中心
+- `src/components/AccountQuotaCard.vue` — 账号额度行
+- `src/components/AccountManageModals.vue` — 批量编辑 / 重命名
+- `src/components/AccountJsonModal.vue` — JSON 查看
+- `src/components/JsonFoldViewer.vue` — 可折叠 JSON 展示
 
-Core API orchestration:
+核心 API 封装：
 
 - `src/services/platformClients.ts`
+- `src/utils/quotaCard.ts` — 额度与 5h/7d 解析
 
-## API integration implemented
+Cloudflare Functions：
 
-### 1) CLIProxyAPI
+- `functions/api/config.ts` — 下发平台地址与 Key
+- `functions/api/proxy.ts` — 请求代理
 
-- Endpoint: `GET /v0/management/auth-files`
-- Auth headers:
+## 已对接的 API
+
+### 1）CLIProxyAPI
+
+- 接口：`GET /v0/management/auth-files`
+- 认证头：
   - `Authorization: Bearer <key>`
   - `X-Management-Key: <key>`
-- Source mapping: `internal/api/server.go` + `internal/api/handlers/management/auth_files.go`
 
-### 2) sub2api
+### 2）sub2api
 
-- Endpoint: `GET /api/v1/admin/accounts?page=1&page_size=300`
-- Auth headers:
+- 接口：`GET /api/v1/admin/accounts?page=1&page_size=300`
+- 账号额度：`GET /api/v1/admin/accounts/{id}/usage?timezone=Asia/Shanghai`
+- 认证头：
   - `x-api-key: <key>`
-  - `Authorization: Bearer <key>` (fallback path)
-- Source mapping: `backend/internal/server/routes/admin.go` + `backend/internal/server/middleware/admin_auth.go` + `backend/internal/handler/admin/account_handler.go`
+  - `Authorization: Bearer <key>`（备用）
 
-## Local run
+## 本地运行
 
 ```bash
 npm install
 npm run dev
 ```
 
-## Build
+本地开发时，需在 Cloudflare 环境变量或 `wrangler.toml` 的 `[vars]` 中配置平台地址与 Key；也可通过 `/api/config` 读取（与生产一致）。
+
+## 构建
 
 ```bash
 npm run build
 npm run preview
 ```
 
-## Deploy to Cloudflare Pages
+## 部署到 Cloudflare
 
 ```bash
 npm run build
-npx wrangler pages deploy dist --project-name unified-admin-panel
+npx wrangler deploy
 ```
 
-Optional fixed platform config can be set in Cloudflare environment variables:
+或在 Cloudflare 控制台连接 Git 仓库自动构建部署。
 
-- `CPA_BASE_URL` / `CPA_API_KEY` for `CLIProxyAPI` (`CLIPROXYAPI_BASE_URL` / `CLIPROXYAPI_API_KEY` also supported)
-- `SUB2API_BASE_URL` / `SUB2API_API_KEY` for `sub2api`
+### 环境变量（在 Cloudflare 控制台配置）
 
-The config modal only writes local overrides. If a local value is empty, the app falls back to these fixed values.
+| 变量 | 说明 |
+|------|------|
+| `CPA_BASE_URL` / `CLIPROXYAPI_BASE_URL` | CLIProxyAPI 地址 |
+| `CPA_API_KEY` / `CLIPROXYAPI_API_KEY` | CLIProxyAPI Key |
+| `SUB2API_BASE_URL` | sub2api 地址 |
+| `SUB2API_API_KEY` | sub2api Key |
 
-## Notes
+`wrangler.toml` 中可写默认值，生产环境建议在 Cloudflare 控制台覆盖。
 
-- By default, requests use `POST /api/proxy` to avoid browser cross-origin issues.
-- Optional request mode override:
-  - `localStorage.setItem("unified-admin-panel.request-mode", "direct")`
-  - `localStorage.setItem("unified-admin-panel.request-mode", "proxy")`
+### 本地仅保存的配置
+
+浏览器 `localStorage` 仅保存：
+
+- 各平台是否在主页显示（`enabled`）
+- 排序字段与方向
+- 主题、自动刷新间隔等 UI 偏好
+
+**不再**在本地保存平台地址或 API Key。
+
+## 说明
+
+- 默认通过 `POST /api/proxy` 转发 API 请求，避免跨域。
+- 可选请求模式（浏览器控制台）：
+  - `localStorage.setItem("unified-admin-panel.request-mode", "direct")` — 直连
+  - `localStorage.setItem("unified-admin-panel.request-mode", "proxy")` — 走代理（默认）
+- 刷新数据时，对每个需展示额度的账号并行请求 `usage`（最多 100 并发），不请求 `stats?days=30`。
+- `unknown` 计划类型账号排在列表末尾，卡片上不显示 5h/7d 额度条（仍会请求 usage 数据）。

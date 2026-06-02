@@ -31,7 +31,12 @@ import {
   sanitizeBaseUrl,
   setAccountEnabled
 } from "./services/platformClients";
-import type { PlatformConfig, PlatformKind, UnifiedAccount } from "./types/platform";
+import type {
+  PlatformConfig,
+  PlatformKind,
+  StoredPlatformPrefs,
+  UnifiedAccount
+} from "./types/platform";
 import type {
   PlatformSortSettings,
   SortDirection,
@@ -64,22 +69,6 @@ interface RuntimePlatformConfig {
   apiKey?: string;
 }
 
-function readEnvText(key: string): string {
-  const env = import.meta.env as Record<string, string | undefined>;
-  return String(env[key] ?? "").trim();
-}
-
-function resolvePlatformEnv(platformId: PlatformKind, key: "BASE_URL" | "API_KEY"): string {
-  const prefixes = platformId === "cliproxyapi" ? ["CPA", "CLIPROXYAPI"] : ["SUB2API"];
-  for (const prefix of prefixes) {
-    const value = readEnvText(`VITE_${prefix}_${key}`);
-    if (value) {
-      return value;
-    }
-  }
-  return "";
-}
-
 const autoRefreshOptions = [
   { label: "自动刷新：关闭", value: 0 },
   { label: "自动刷新：15秒", value: 15 },
@@ -91,15 +80,15 @@ const defaultPlatforms: PlatformConfig[] = [
   {
     id: "cliproxyapi",
     name: "cpa",
-    baseUrl: resolvePlatformEnv("cliproxyapi", "BASE_URL"),
-    apiKey: resolvePlatformEnv("cliproxyapi", "API_KEY"),
+    baseUrl: "",
+    apiKey: "",
     enabled: true
   },
   {
     id: "sub2api",
     name: "sub2api",
-    baseUrl: resolvePlatformEnv("sub2api", "BASE_URL"),
-    apiKey: resolvePlatformEnv("sub2api", "API_KEY"),
+    baseUrl: "",
+    apiKey: "",
     enabled: true
   }
 ];
@@ -119,33 +108,49 @@ function cloneDefaultPlatforms(): PlatformConfig[] {
   return defaultPlatforms.map((item) => ({ ...item }));
 }
 
-function mergePlatformConfig(
-  target: PlatformConfig,
-  override: PlatformConfig
-): PlatformConfig {
-  const baseUrl = sanitizeBaseUrl(override.baseUrl);
-  const apiKey = override.apiKey.trim();
-  return {
-    ...target,
-    baseUrl: baseUrl || target.baseUrl,
-    apiKey: apiKey || target.apiKey,
-    enabled: override.enabled
-  };
+function buildStoredPlatformPrefs(): StoredPlatformPrefs[] {
+  return platforms.value.map((platform) => ({
+    id: platform.id,
+    enabled: platform.enabled
+  }));
 }
 
-function buildStoredPlatforms(): PlatformConfig[] {
-  const defaults = cloneDefaultPlatforms();
-  return platforms.value.map((platform) => {
-    const defaultPlatform = defaults.find((item) => item.id === platform.id);
-    const baseUrl = sanitizeBaseUrl(platform.baseUrl);
-    const apiKey = platform.apiKey.trim();
-    return {
-      ...platform,
-      baseUrl: baseUrl && baseUrl !== defaultPlatform?.baseUrl ? baseUrl : "",
-      apiKey: apiKey && apiKey !== defaultPlatform?.apiKey ? apiKey : "",
-      enabled: platform.enabled
-    };
-  });
+function readStoredEnabledMap(): Partial<Record<PlatformKind, boolean>> {
+  try {
+    const raw = localStorage.getItem(PLATFORM_STORAGE_KEY);
+    if (!raw) {
+      return {};
+    }
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) {
+      return {};
+    }
+    const enabledMap: Partial<Record<PlatformKind, boolean>> = {};
+    for (const item of parsed) {
+      if (!item || typeof item !== "object") {
+        continue;
+      }
+      const record = item as Record<string, unknown>;
+      const id = record.id;
+      if (id !== "cliproxyapi" && id !== "sub2api") {
+        continue;
+      }
+      if (typeof record.enabled === "boolean") {
+        enabledMap[id] = record.enabled;
+      }
+    }
+    return enabledMap;
+  } catch {
+    return {};
+  }
+}
+
+function buildPlatformsFromDefaults(): PlatformConfig[] {
+  const enabledMap = readStoredEnabledMap();
+  return cloneDefaultPlatforms().map((platform) => ({
+    ...platform,
+    enabled: enabledMap[platform.id] ?? platform.enabled
+  }));
 }
 
 function isRuntimePlatformConfigArray(value: unknown): value is RuntimePlatformConfig[] {
@@ -166,31 +171,15 @@ function isRuntimePlatformConfigArray(value: unknown): value is RuntimePlatformC
 }
 
 function applyRuntimePlatformDefaults(runtimePlatforms: RuntimePlatformConfig[]): void {
-  const previousStoredPlatforms = buildStoredPlatforms();
   for (const runtimePlatform of runtimePlatforms) {
     const target = defaultPlatforms.find((item) => item.id === runtimePlatform.id);
     if (!target) {
       continue;
     }
-    const baseUrl = sanitizeBaseUrl(runtimePlatform.baseUrl ?? "");
-    const apiKey = runtimePlatform.apiKey?.trim() ?? "";
-    if (baseUrl) {
-      target.baseUrl = baseUrl;
-    }
-    if (apiKey) {
-      target.apiKey = apiKey;
-    }
+    target.baseUrl = sanitizeBaseUrl(runtimePlatform.baseUrl ?? "");
+    target.apiKey = runtimePlatform.apiKey?.trim() ?? "";
   }
-  fixedPlatforms.value = cloneDefaultPlatforms();
-  const defaults = cloneDefaultPlatforms();
-  for (const item of previousStoredPlatforms) {
-    const targetIndex = defaults.findIndex((entry) => entry.id === item.id);
-    if (targetIndex < 0) {
-      continue;
-    }
-    defaults[targetIndex] = mergePlatformConfig(defaults[targetIndex], item);
-  }
-  platforms.value = defaults;
+  platforms.value = buildPlatformsFromDefaults();
 }
 
 function cloneDefaultSortSettings(): PlatformSortSettings {
@@ -198,25 +187,6 @@ function cloneDefaultSortSettings(): PlatformSortSettings {
     sub2api: { ...defaultSortSettings.sub2api },
     cliproxyapi: { ...defaultSortSettings.cliproxyapi }
   };
-}
-
-function isPlatformConfigArray(value: unknown): value is PlatformConfig[] {
-  if (!Array.isArray(value)) {
-    return false;
-  }
-  return value.every((item) => {
-    if (!item || typeof item !== "object") {
-      return false;
-    }
-    const candidate = item as PlatformConfig;
-    return (
-      (candidate.id === "cliproxyapi" || candidate.id === "sub2api") &&
-      typeof candidate.name === "string" &&
-      typeof candidate.baseUrl === "string" &&
-      typeof candidate.apiKey === "string" &&
-      typeof candidate.enabled === "boolean"
-    );
-  });
 }
 
 function isSortField(value: unknown): value is SortField {
@@ -235,28 +205,7 @@ function isSortDirection(value: unknown): value is SortDirection {
 }
 
 function loadPlatforms(): PlatformConfig[] {
-  try {
-    const raw = localStorage.getItem(PLATFORM_STORAGE_KEY);
-    if (!raw) {
-      return cloneDefaultPlatforms();
-    }
-    const parsed = JSON.parse(raw);
-    if (!isPlatformConfigArray(parsed)) {
-      return cloneDefaultPlatforms();
-    }
-
-    const defaults = cloneDefaultPlatforms();
-    for (const item of parsed) {
-      const targetIndex = defaults.findIndex((entry) => entry.id === item.id);
-      if (targetIndex < 0) {
-        continue;
-      }
-      defaults[targetIndex] = mergePlatformConfig(defaults[targetIndex], item);
-    }
-    return defaults;
-  } catch {
-    return cloneDefaultPlatforms();
-  }
+  return buildPlatformsFromDefaults();
 }
 
 function loadSortSettings(): PlatformSortSettings {
@@ -382,7 +331,6 @@ const checkMessages = ref<Record<PlatformKind, string>>({
 
 const accounts = ref<UnifiedAccount[]>([]);
 const errors = ref<string[]>([]);
-const fixedPlatforms = ref<PlatformConfig[]>(cloneDefaultPlatforms());
 
 const splitContainerRef = ref<HTMLElement | null>(null);
 const leftGridRef = ref<HTMLElement | null>(null);
@@ -426,7 +374,7 @@ function notify(type: FeedbackType, message: string): void {
 }
 
 function persistPlatforms(): void {
-  localStorage.setItem(PLATFORM_STORAGE_KEY, JSON.stringify(buildStoredPlatforms()));
+  localStorage.setItem(PLATFORM_STORAGE_KEY, JSON.stringify(buildStoredPlatformPrefs()));
 }
 
 function persistSortSettings(): void {
@@ -434,13 +382,8 @@ function persistSortSettings(): void {
 }
 
 function saveSettings(options?: { silent?: boolean }): void {
-  for (const platform of platforms.value) {
-    platform.baseUrl = sanitizeBaseUrl(platform.baseUrl);
-    platform.apiKey = platform.apiKey.trim();
-  }
   persistPlatforms();
   persistSortSettings();
-  platforms.value = loadPlatforms();
   if (!options?.silent) {
     notify("success", "配置已保存。");
   }
@@ -460,30 +403,19 @@ async function loadRuntimeConfig(): Promise<void> {
     }
     applyRuntimePlatformDefaults(payload.platforms);
   } catch {
-    // 运行时配置不可用时保留构建期默认值和本地覆盖。
+    // 运行时配置不可用时地址与 Key 保持为空，需检查 Cloudflare 环境变量。
   }
 }
 
-function updatePlatformField(payload: {
+function updatePlatformEnabled(payload: {
   platformId: PlatformKind;
-  key: "baseUrl" | "apiKey" | "enabled";
-  value: string | boolean;
+  enabled: boolean;
 }): void {
   const target = platforms.value.find((item) => item.id === payload.platformId);
   if (!target) {
     return;
   }
-  if (payload.key === "enabled") {
-    target.enabled = Boolean(payload.value);
-    return;
-  }
-  const localValue = String(payload.value);
-  if (localValue.trim()) {
-    target[payload.key] = localValue;
-    return;
-  }
-  target[payload.key] =
-    fixedPlatforms.value.find((item) => item.id === payload.platformId)?.[payload.key] ?? "";
+  target.enabled = payload.enabled;
 }
 
 function updateSortSetting(payload: {
@@ -1613,7 +1545,7 @@ onBeforeUnmount(() => {
       <header class="app-toolbar">
         <div class="app-toolbar__title">
           <h1>账号额度面板</h1>
-          <p>可在配置中心开关 Sub2API / CPA 模块；卡片支持批量选择与官方 API 编辑</p>
+          <p>平台地址与 Key 由 Cloudflare 配置；可在配置中心开关模块与排序</p>
         </div>
         <div class="app-toolbar__actions">
           <NSpace align="center" wrap>
@@ -1822,12 +1754,11 @@ onBeforeUnmount(() => {
       <FloatingConfigModal
         :show="showConfigModal"
         :platforms="platforms"
-        :fixed-platforms="fixedPlatforms"
         :test-loading="testLoading"
         :check-messages="checkMessages"
         :sort-settings="sortSettings"
         @update:show="(value) => (showConfigModal = value)"
-        @update-platform-field="updatePlatformField"
+        @update-platform-enabled="updatePlatformEnabled"
         @update-sort-setting="updateSortSetting"
         @save-settings="saveSettings"
         @test-platform="testConnection"
