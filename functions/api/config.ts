@@ -42,10 +42,10 @@ function buildRuntimePlatforms(env: Env): RuntimePlatformConfig[] {
   ];
 }
 
-export const onRequestGet: PagesFunction = (context) => {
+export const onRequestGet: PagesFunction<Env> = (context) => {
   return new Response(
     JSON.stringify({
-      platforms: buildRuntimePlatforms(context.env as Env)
+      platforms: buildRuntimePlatforms(context.env)
     }),
     {
       headers: { "content-type": "application/json; charset=utf-8" }
