@@ -288,16 +288,74 @@ function resolveSub2PlanType(raw: Record<string, unknown>): Sub2PlanType {
   return "unknown";
 }
 
-function shouldClearSub2FiveHourWindow(raw: Record<string, unknown>): boolean {
-  return resolveSub2PlanType(raw) === "free";
+function resolveSub2FiveHourWindowMinutes(
+  extra: Record<string, unknown> | undefined,
+  usageWindow5h: Record<string, unknown> | undefined
+): number | undefined {
+  const fromExtra = toOptionalNumber(
+    extra?.codex_5h_window_minutes ?? extra?.codex5hWindowMinutes
+  );
+  if (typeof fromExtra === "number") {
+    return fromExtra;
+  }
+  return toOptionalNumber(usageWindow5h?.window_minutes ?? usageWindow5h?.windowMinutes);
 }
 
-function buildClearedFiveHourWindow(): UsageWindowMetric {
+function hasActiveSub2FiveHourWindow(
+  raw: Record<string, unknown>,
+  extra: Record<string, unknown> | undefined,
+  usageWindow5h: Record<string, unknown> | undefined
+): boolean {
+  const windowMinutes = resolveSub2FiveHourWindowMinutes(extra, usageWindow5h);
+  if (typeof windowMinutes === "number") {
+    return windowMinutes > 0;
+  }
+  if (resolveSub2PlanType(raw) === "free") {
+    return false;
+  }
+  return Boolean(usageWindow5h);
+}
+
+function resolveSub2FiveHourWindowUsage(
+  usageWindow5h: Record<string, unknown> | undefined,
+  extra: Record<string, unknown> | undefined,
+  fiveHourResetAt: unknown
+): ResolvedWindowUsage | undefined {
+  const fromPercent = pickWindowUsage([
+    { value: usageWindow5h?.utilization, resetAt: fiveHourResetAt },
+    { value: usageWindow5h?.used_percent, resetAt: fiveHourResetAt },
+    { value: usageWindow5h?.usedPercent, resetAt: fiveHourResetAt },
+    { value: extra?.codex_5h_used_percent, resetAt: fiveHourResetAt },
+    { value: extra?.codex_5h_utilization, resetAt: fiveHourResetAt }
+  ]);
+  if (fromPercent) {
+    return fromPercent;
+  }
+
+  if (!usageWindow5h) {
+    return undefined;
+  }
+
+  const windowStats = toRecord(usageWindow5h.window_stats ?? usageWindow5h.windowStats);
+  const hasWindowData =
+    typeof pickRecordUsedUsd(windowStats) === "number" ||
+    typeof toOptionalNumber(usageWindow5h.remaining_seconds ?? usageWindow5h.remainingSeconds) ===
+      "number" ||
+    typeof usageWindow5h.resets_at === "string" ||
+    typeof usageWindow5h.resetsAt === "string";
+
+  if (!hasWindowData) {
+    return undefined;
+  }
+
   return {
-    window: "5h",
     usedPercent: 0,
-    remainingPercent: 0,
-    usedUsdValue: 0
+    remainingPercent: 100,
+    resetAt:
+      typeof fiveHourResetAt === "string" && fiveHourResetAt.trim()
+        ? fiveHourResetAt.trim()
+        : undefined,
+    resetAtLabel: formatResetAtLabel(fiveHourResetAt)
   };
 }
 
@@ -343,21 +401,14 @@ function resolveSub2UsageWindows(raw: Record<string, unknown>): UsageWindowMetri
     extra?.weekly_reset_at;
 
   const windows: UsageWindowMetric[] = [];
+  const hasFiveHourWindow = hasActiveSub2FiveHourWindow(raw, extra, usageWindow5h);
   const fiveHourUsedUsd = resolveWindowUsedUsd(
-    shouldClearSub2FiveHourWindow(raw) ? 0 : resolveSub2FiveHourUsedUsd(raw)
+    hasFiveHourWindow ? resolveSub2FiveHourUsedUsd(raw) : undefined
   );
   const sevenDayUsedUsd = resolveWindowUsedUsd(resolveSub2SevenDayUsedUsd(raw));
 
-  if (shouldClearSub2FiveHourWindow(raw)) {
-    windows.push(buildClearedFiveHourWindow());
-  } else {
-    const fiveHour = pickWindowUsage([
-      { value: usageWindow5h?.utilization, resetAt: fiveHourResetAt },
-      { value: usageWindow5h?.used_percent, resetAt: fiveHourResetAt },
-      { value: usageWindow5h?.usedPercent, resetAt: fiveHourResetAt },
-      { value: extra?.codex_5h_used_percent, resetAt: fiveHourResetAt },
-      { value: extra?.codex_5h_utilization, resetAt: fiveHourResetAt }
-    ]);
+  if (hasFiveHourWindow) {
+    const fiveHour = resolveSub2FiveHourWindowUsage(usageWindow5h, extra, fiveHourResetAt);
     if (fiveHour) {
       windows.push({ window: "5h", ...fiveHour, usedUsdValue: fiveHourUsedUsd });
     }
@@ -509,17 +560,27 @@ function resolveSub2SevenDayUsedUsd(raw: Record<string, unknown>): number | unde
   );
   const sevenDaySummary = toRecord(sevenDayStats?.summary);
   const usageWindow = toRecord(raw.sub2_usage_window ?? raw.usage_window);
+  const usageWindow5h = toRecord(
+    usageWindow?.five_hour ??
+      usageWindow?.fiveHour ??
+      usageWindow?.window_5h ??
+      usageWindow?.codex_5h ??
+      usageWindow?.hour_5
+  );
   const usageWindow7d = toRecord(
     usageWindow?.seven_day ?? usageWindow?.sevenDay ?? usageWindow?.window_7d
   );
   const usageWindow7dStats = toRecord(
     usageWindow7d?.window_stats ?? usageWindow7d?.windowStats
   );
+  const usageWindow5hStats = toRecord(
+    usageWindow5h?.window_stats ?? usageWindow5h?.windowStats
+  );
   const extra = toRecord(raw.extra);
   const summaryDays = toOptionalNumber(summary?.days ?? summary?.window_days ?? summary?.windowDays);
   const history7dUsed = sumRecentHistoryUsedUsd(stats, 7);
 
-  return pickFirstNonNegativeNumber([
+  const fromSevenDay = pickFirstNonNegativeNumber([
     raw.codex_7d_used_usd,
     raw.codex7dUsedUsd,
     raw.seven_day_used_usd,
@@ -541,6 +602,18 @@ function resolveSub2SevenDayUsedUsd(raw: Record<string, unknown>): number | unde
     typeof summaryDays === "number" && summaryDays <= 7 ? summary?.total_actual_cost : undefined,
     typeof summaryDays === "number" && summaryDays <= 7 ? summary?.total_cost : undefined
   ]);
+
+  if (
+    (!fromSevenDay || fromSevenDay === 0) &&
+    !hasActiveSub2FiveHourWindow(raw, extra, usageWindow5h)
+  ) {
+    const reassignedFromFiveHour = pickRecordUsedUsd(usageWindow5hStats);
+    if (typeof reassignedFromFiveHour === "number" && reassignedFromFiveHour > 0) {
+      return reassignedFromFiveHour;
+    }
+  }
+
+  return fromSevenDay;
 }
 
 function resolveUsedUsd(raw: Record<string, unknown>): number | undefined {
